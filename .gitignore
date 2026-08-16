@@ -1,0 +1,26 @@
+# Node
+node_modules/
+dist/
+
+# Azure Functions local dev
+local.settings.json
+
+# Terraform
+.terraform/
+.build/
+*.tfstate
+*.tfstate.backup
+*.tfvars
+!*.tfvars.example
+
+# .NET
+bin/
+obj/
+
+# Env
+.env
+.env.local
+
+# Editor / OS
+.DS_Store
+.idea/
