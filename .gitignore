@@ -2,9 +2,6 @@
 node_modules/
 dist/
 
-# Azure Functions local dev
-local.settings.json
-
 # Terraform
 .terraform/
 .build/
