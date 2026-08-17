@@ -1,7 +1,15 @@
 var builder = DistributedApplication.CreateBuilder(args);
 
-var encouragementApi = builder.AddProject<Projects.encouragement_api>("encouragement-api");
-var contactsApi = builder.AddProject<Projects.contacts_api>("contacts-api");
+var postgres = builder.AddAzurePostgresFlexibleServer("postgres")
+    .RunAsContainer();
+
+var encouragementDb = postgres.AddDatabase("encouragement");
+var contactsDb = postgres.AddDatabase("contacts");
+
+var encouragementApi = builder.AddProject<Projects.encouragement_api>("encouragement-api")
+    .WithReference(encouragementDb);
+var contactsApi = builder.AddProject<Projects.contacts_api>("contacts-api")
+    .WithReference(contactsDb);
 
 builder.AddNpmApp("frontend", "../frontend", "dev")
     .WithHttpEndpoint(env: "PORT")
