@@ -1,6 +1,20 @@
 @encouragement_api_HostAddress = http://localhost:5097
 
-GET {{encouragement_api_HostAddress}}/weatherforecast/
+GET {{encouragement_api_HostAddress}}/health
+Accept: application/json
+
+###
+
+POST {{encouragement_api_HostAddress}}/encouragements
+Content-Type: application/json
+
+{
+  "text": "You've got this."
+}
+
+###
+
+GET {{encouragement_api_HostAddress}}/encouragements/1
 Accept: application/json
 
 ###

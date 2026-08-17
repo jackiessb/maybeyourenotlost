@@ -1,6 +1,20 @@
 @contacts_api_HostAddress = http://localhost:5214
 
-GET {{contacts_api_HostAddress}}/weatherforecast/
+GET {{contacts_api_HostAddress}}/health
+Accept: application/json
+
+###
+
+POST {{contacts_api_HostAddress}}/contacts
+Content-Type: application/json
+
+{
+  "phoneNumber": "+1 555-123-4567"
+}
+
+###
+
+GET {{contacts_api_HostAddress}}/contacts/1
 Accept: application/json
 
 ###

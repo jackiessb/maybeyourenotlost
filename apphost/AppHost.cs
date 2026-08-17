@@ -11,7 +11,7 @@ var encouragementApi = builder.AddProject<Projects.encouragement_api>("encourage
 var contactsApi = builder.AddProject<Projects.contacts_api>("contacts-api")
     .WithReference(contactsDb);
 
-builder.AddNpmApp("frontend", "../frontend", "dev")
+builder.AddJavaScriptApp("frontend", "../frontend", "dev")
     .WithHttpEndpoint(env: "PORT")
     .WithExternalHttpEndpoints()
     .WithReference(encouragementApi)
