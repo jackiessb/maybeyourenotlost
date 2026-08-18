@@ -22,7 +22,16 @@ var frontend = builder.AddJavaScriptApp("frontend", "../frontend", "dev")
     .PublishAsStaticWebsite("/encouragements", encouragementApi);
 #pragma warning restore ASPIREJAVASCRIPT001
 
-encouragementApi.WithEnvironment("Frontend__Origin", frontend.GetEndpoint("http"));
-contactsApi.WithEnvironment("Frontend__Origin", frontend.GetEndpoint("http"));
+if (builder.ExecutionContext.IsPublishMode)
+{
+    const string frontendOrigin = "https://love.maybeyourenotlost.com";
+    encouragementApi.WithEnvironment("Frontend__Origin", frontendOrigin);
+    contactsApi.WithEnvironment("Frontend__Origin", frontendOrigin);
+}
+else
+{
+    encouragementApi.WithEnvironment("Frontend__Origin", frontend.GetEndpoint("http"));
+    contactsApi.WithEnvironment("Frontend__Origin", frontend.GetEndpoint("http"));
+}
 
 builder.Build().Run();
