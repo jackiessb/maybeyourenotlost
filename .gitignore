@@ -21,3 +21,4 @@ obj/
 # Editor / OS
 .DS_Store
 .idea/
+.azure
