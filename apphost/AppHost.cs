@@ -1,15 +1,17 @@
 var builder = DistributedApplication.CreateBuilder(args);
 
 var postgres = builder.AddAzurePostgresFlexibleServer("postgres")
-    .RunAsContainer();
+    .RunAsContainer(container => container.WithPgAdmin());
 
 var encouragementDb = postgres.AddDatabase("encouragement");
 var contactsDb = postgres.AddDatabase("contacts");
 
 var encouragementApi = builder.AddProject<Projects.encouragement_api>("encouragement-api")
-    .WithReference(encouragementDb);
+    .WithReference(encouragementDb)
+    .WaitFor(encouragementDb);
 var contactsApi = builder.AddProject<Projects.contacts_api>("contacts-api")
-    .WithReference(contactsDb);
+    .WithReference(contactsDb)
+    .WaitFor(contactsDb);
 
 #pragma warning disable ASPIREJAVASCRIPT001
 var frontend = builder.AddJavaScriptApp("frontend", "../frontend", "dev")
