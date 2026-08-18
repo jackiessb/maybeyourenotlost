@@ -1,8 +1,16 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
 
 name: maybeyourenotlost
-services:  
+services:
   app:
     language: dotnet
     project: ./apphost/AppHost.csproj
     host: containerapp
+
+hooks:
+  postprovision:
+    shell: sh
+    run: ./scripts/bind-custom-domain.sh
+  postdeploy:
+    shell: sh
+    run: ./scripts/bind-custom-domain.sh

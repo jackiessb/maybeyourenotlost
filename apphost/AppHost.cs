@@ -18,8 +18,7 @@ var frontend = builder.AddJavaScriptApp("frontend", "../frontend", "dev")
     .WithReference(encouragementApi)
     .WithReference(contactsApi)
     .WithBuildScript("build")
-    .PublishAsStaticWebsite("/contacts", contactsApi)
-    .PublishAsStaticWebsite("/encouragements", encouragementApi);
+    .PublishAsStaticWebsite("/contacts", contactsApi);
 #pragma warning restore ASPIREJAVASCRIPT001
 
 if (builder.ExecutionContext.IsPublishMode)
@@ -27,6 +26,15 @@ if (builder.ExecutionContext.IsPublishMode)
     const string frontendOrigin = "https://love.maybeyourenotlost.com";
     encouragementApi.WithEnvironment("Frontend__Origin", frontendOrigin);
     contactsApi.WithEnvironment("Frontend__Origin", frontendOrigin);
+
+    // PublishAsStaticWebsite always writes its YARP route/cluster under the fixed id "api",
+    // so a second chained call for encouragementApi silently overwrote the contactsApi route
+    // instead of adding to it. Register the second route by hand using the same env var
+    // contract the helper uses, under a distinct id.
+    frontend
+        .WithEnvironment("REVERSEPROXY__ROUTES__encouragements__CLUSTERID", "encouragements")
+        .WithEnvironment("REVERSEPROXY__ROUTES__encouragements__MATCH__PATH", "/encouragements/{**catch-all}")
+        .WithEnvironment("REVERSEPROXY__CLUSTERS__encouragements__DESTINATIONS__destination1__ADDRESS", "https+http://encouragement-api");
 }
 else
 {
