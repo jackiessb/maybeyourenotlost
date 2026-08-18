@@ -1,30 +1,39 @@
-import { Button } from "./components/ui/button";
+import { useState } from "react";
+import Home from "./pages/Home";
+import EncourageSomeone from "./pages/EncourageSomeone";
+import BeEncouraged from "./pages/BeEncouraged";
 
-const ENCOURAGEMENTS = [
-  "You are doing better than you think.",
-  "One step at a time is still progress.",
-  "You've gotten through hard days before. You can get through this one too.",
-  "It's okay to not have it all figured out yet.",
-  "You matter, even on the days it doesn't feel like it.",
-];
+type Page = "home" | "encourage-someone" | "be-encouraged";
 
 function App() {
-  const encourageSomeone = async () => {
-    const text =
-      ENCOURAGEMENTS[Math.floor(Math.random() * ENCOURAGEMENTS.length)];
-
-    await fetch("/encouragements", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
-    });
-  };
+  const [page, setPage] = useState<Page>("home");
 
   return (
-    <>
-      <div>MaybeYoureNotLost</div>
-      <Button onClick={encourageSomeone}>Encourage Someone</Button>
-    </>
+    <div className="flex flex-col p-5 h-screen">
+      {/* Top Section */}
+      <div className="flex flex-col h-1/2 gap-4">
+        <div className="flex flex-col gap-2 text-3xl font-bold">
+          <span>Maybe</span>
+          <span>You're</span>
+          <span>Not</span>
+          <span>Lost.</span>
+        </div>
+        <span className="text-sm w-1/2">
+          You're right where you need to be.
+        </span>
+      </div>
+      {/* Rest of Page */}
+      <div className="flex flex-col flex-1">
+        {page === "home" && (
+          <Home
+            onEncourageSomeone={() => setPage("encourage-someone")}
+            onBeEncouraged={() => setPage("be-encouraged")}
+          />
+        )}
+        {page === "encourage-someone" && <EncourageSomeone />}
+        {page === "be-encouraged" && <BeEncouraged />}
+      </div>
+    </div>
   );
 }
 
