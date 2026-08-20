@@ -1,7 +1,4 @@
-using Azure.Core;
-using Azure.Identity;
 using Microsoft.EntityFrameworkCore;
-using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -11,30 +8,25 @@ builder.AddServiceDefaults();
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
 
-// The container image lacks libgssapi_krb5.so.2, so GSS encryption negotiation throws.
-// Disabling it also skips Npgsql's SSL negotiation step instead of just falling through
-// to it, so Ssl Mode must be forced explicitly or the connection goes out unencrypted,
-// which Azure Postgres Flexible Server's pg_hba.conf rejects.
-const string extraConnectionParams = ";Gss Encryption Mode=Disable;Ssl Mode=Require";
+// The mcr.microsoft.com/dotnet/aspnet base image ships no libgssapi_krb5.so.2, so Npgsql's
+// GSS encryption negotiation throws on connect. GSS is Kerberos-only and unused here.
+var connectionParams = ";Gss Encryption Mode=Disable";
 
-// This Postgres server has password auth disabled (Entra ID-only), so the provisioned
-// connection string has no password. Aspire's Npgsql client integration doesn't acquire
-// Entra tokens on its own, so a periodic password provider fetches one from the
-// container's managed identity for every new physical connection.
-var credential = new DefaultAzureCredential();
-var dataSourceBuilder = new NpgsqlDataSourceBuilder(
-    builder.Configuration.GetConnectionString("encouragement") + extraConnectionParams);
-dataSourceBuilder.UsePeriodicPasswordProvider(async (_, ct) =>
+// Azure Postgres Flexible Server runs with require_secure_transport=on, and disabling GSS makes
+// Npgsql skip SSL negotiation instead of falling through to it, so TLS has to be forced
+// explicitly. The local dev container serves plaintext only, hence the guard.
+if (!builder.Environment.IsDevelopment())
 {
-    var token = await credential.GetTokenAsync(
-        new TokenRequestContext(["https://ossrdbms-aad.database.windows.net/.default"]), ct);
-    return token.Token;
-}, TimeSpan.FromMinutes(55), TimeSpan.FromSeconds(10));
-var npgsqlDataSource = dataSourceBuilder.Build();
+    connectionParams += ";Ssl Mode=Require";
+}
 
-builder.AddNpgsqlDbContext<EncouragementDbContext>("encouragement",
-    configureSettings: settings => settings.ConnectionString += extraConnectionParams,
-    configureDbContextOptions: options => options.UseNpgsql(npgsqlDataSource));
+// The server is Entra ID-only (passwordAuth disabled), so the provisioned connection string
+// carries neither a username nor a password. AddAzureNpgsqlDbContext supplies both from the
+// container's managed identity: the Postgres role name comes from the token's xms_mirid claim
+// (= "mi-yudlalf6hmivo", the identity registered as the server's Entra admin) and a freshly
+// acquired token is used as the password for every new physical connection.
+builder.AddAzureNpgsqlDbContext<EncouragementDbContext>("encouragement",
+    configureSettings: settings => settings.ConnectionString += connectionParams);
 
 builder.Services.AddCors(options =>
 {

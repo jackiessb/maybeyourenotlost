@@ -75,131 +75,136 @@ projects. In `Program.cs`, built an explicit `NpgsqlDataSource` via
 managed identity every ~55 minutes, then wired it into EF Core with
 `options.UseNpgsql(dataSource)`.
 
-### 6. Crash #4 (current blocker) — `password authentication failed for user "app"`
+### 6. Crash #4 — `password authentication failed for user "app"`
 
 ```
 F Npgsql.PostgresException (0x80004005): 28P01: password authentication
   failed for user "app"
 ```
 
-A token is now being sent, but Postgres rejects it. This is an
-**infrastructure mismatch**, not a code bug:
+A token was now being sent, but as the wrong Postgres role. **The earlier
+reading of this — that `app` came from Aspire's default admin username and was
+an orphaned identity — was wrong.** Nothing in the app or the infrastructure
+ever set `Username=app`:
 
-- Connection strings for both APIs use `Username=app` — Aspire's default
-  admin username, generated for the *password-based* admin login Aspire
-  normally provisions.
-- But `az deployment group list -g rg-dev` shows a `postgres-roles`
-  deployment (the only one that ever ran) that created exactly **one**
-  Entra-linked Postgres role: the shared user-assigned managed identity
-  `mi-yudlalf6hmivo` (object id `92057908-3b71-4cc4-81b0-8bf317251291`),
-  which is also the server's sole registered Entra admin
-  (`az postgres flexible-server microsoft-entra-admin list`).
-- No role named `app` was ever created as an Entra principal. And since
-  `passwordAuth` is disabled server-wide, the old password credential for
-  `app` (if one was ever generated) can't be used either. `app` is an
-  orphaned identity — valid for neither auth path.
+- The generated bicep emits
+  `output connectionString string = 'Host=${postgres.properties.fullyQualifiedDomainName}'`
+  — host only, **no username, no password**. `.azure/dev/.env` confirms it:
+  `POSTGRES_CONNECTIONSTRING="Host=postgres-yudlalf6hmivo.postgres.database.azure.com"`.
+  So `ConnectionStrings__encouragement` is just `Host=…;Database=encouragement`.
+- With no `Username` in the connection string, Npgsql infers one: `PGUSER`,
+  then Kerberos detection, then `Environment.UserName` (it throws
+  "No username could be found" only if all fail).
+- The .NET container images create and run as a non-root OS user literally
+  named **`app`** (`APP_UID=1654`, `useradd … app` in
+  `dotnet/dotnet-docker` `runtime-deps`). So `Environment.UserName` is `app`.
 
-## Chosen fix: create an Entra-linked Postgres role named `app`
+`app` was never a Postgres role, an Entra principal, or an Aspire default — it
+is the container's OS user leaking into the connection string. The Entra token
+itself was fine; it was just being presented as the wrong role name.
 
-Decision made with the user: keep the server passwordless (no security
-posture change) and create the missing role, rather than re-enabling password
-auth or repointing the app at the admin identity (`mi-yudlalf6hmivo`) directly
-(which would run the app with admin-level DB privileges — not least-privilege).
+The username is left blank on purpose: Aspire expects the *client* integration
+to fill it in from the token, because the correct role name depends on which
+managed identity the token was issued to.
 
-This makes `app` a **second** Entra principal on the server, mapped to the
-*same* managed identity object id that the containers already authenticate
-as, but registered as an ordinary (non-admin) database role. The app code
-already expects `Username=app` and already sends a valid Entra token for that
-managed identity — once the role exists and has the right grants, the
-existing code should just work with no further changes.
+## Root cause: the wrong Npgsql client integration
 
-### SQL to run (as an admin identity), once against the server
+`Aspire.Npgsql.EntityFrameworkCore.PostgreSQL` is the plain integration and
+knows nothing about Entra — correctly observed earlier. The Entra-aware
+sibling is a separate package:
 
-```sql
--- Registers "app" as a Postgres role backed by the managed identity's AAD
--- object id. 'service' marks it as a service principal (not a user account).
-SELECT * FROM pgaadauth_create_principal_with_oid(
-  'app', '92057908-3b71-4cc4-81b0-8bf317251291', 'service', false, false);
+**`Aspire.Azure.Npgsql.EntityFrameworkCore.PostgreSQL`** → `AddAzureNpgsqlDbContext<T>()`
 
--- The app needs to create tables via EF Core migrations (CREATE TABLE on
--- first startup) and read/write them afterward, in both databases.
-GRANT ALL PRIVILEGES ON DATABASE encouragement TO "app";
-GRANT ALL PRIVILEGES ON DATABASE contacts TO "app";
+Its `ConfigureEntraIdAuthentication` (in Aspire's
+`ManagedIdentityTokenCredentialHelpers`) does two things, each only when the
+connection string leaves that field empty:
 
--- On Postgres 15+, CREATE on the public schema is no longer granted to
--- PUBLIC by default, so this needs to be explicit per database:
-\c encouragement
-GRANT CREATE, USAGE ON SCHEMA public TO "app";
-\c contacts
-GRANT CREATE, USAGE ON SCHEMA public TO "app";
-```
+1. **Username** — acquires a token for `https://management.azure.com/.default`
+   (the management scope, because that token carries identity names), decodes
+   the JWT payload and reads `xms_mirid`, whose tail segment after
+   `providers/Microsoft.ManagedIdentity/userAssignedIdentities/` is the
+   identity's name. Falls back to `upn`, `preferred_username`, `unique_name`.
+2. **Password** — registers `UsePasswordProvider` returning a fresh
+   `https://ossrdbms-aad.database.windows.net/.default` token per physical
+   connection (no caching; refreshed on expiry).
 
-(Simplest alternative to the schema grants: `ALTER DATABASE encouragement
-OWNER TO "app";` / same for `contacts` — makes `app` the owner outright,
-which is safe here since neither database has any tables yet. Either
-approach works; ownership is less to maintain if more services are added
-later.)
+For this environment `xms_mirid` resolves to **`mi-yudlalf6hmivo`**, which is
+exactly the Postgres role that already exists — the sole registered Entra
+admin on the server, backed by object id `92057908-3b71-4cc4-81b0-8bf317251291`,
+which is the principal id of the user-assigned identity already attached to
+every container app (`AZURE_CLIENT_ID=1bc1d4d6-7bac-44ea-82a8-d8ffded36835`).
 
-### How this SQL was going to be run
+Because both blocks are skipped when the connection string already carries a
+username/password, the same call is safe in local `RunAsContainer` dev, where
+Aspire supplies `Username=postgres;Password=…`.
 
-Running SQL against Postgres requires connecting as an existing admin.
-Steps taken so far:
+**No SQL, no firewall rule, no temporary Entra admin, and no infrastructure
+change is required.** The role the app needs already exists; the app was
+simply never asking for it by name.
 
-1. **Temporarily added `memjkt@gmail.com` as an Entra admin** on
-   `postgres-yudlalf6hmivo` via
-   `az postgres flexible-server microsoft-entra-admin create` — this is
-   still in place and **should be removed** once the role is created:
-   ```sh
-   az postgres flexible-server microsoft-entra-admin delete \
-     -g rg-dev -s postgres-yudlalf6hmivo \
-     --object-id 55735d7a-16f2-48c2-8f6c-e7e32181ccd0 --yes
-   ```
-2. Tried connecting from the local machine with a throwaway
-   `docker run postgres:16 psql ...` using an Entra access token
-   (`az account get-access-token --resource
-   https://ossrdbms-aad.database.windows.net`) as the password. This hung —
-   the server firewall only has an `AllowAllAzureIps` rule, which does not
-   cover a local/home IP.
-3. Considered adding a temporary firewall rule for the local IP — this was
-   blocked by the coding assistant's own permission policy (opening public
-   DB access is treated as a sensitive action requiring explicit approval),
-   so it was not done.
-4. Was about to instead exec into the already-running, healthy `frontend`
-   container app (`az containerapp exec -g rg-dev -n frontend ...`) to run
-   `psql` from *inside* the Container Apps environment, where traffic is
-   already allowed by the existing `AllowAllAzureIps` firewall rule — no
-   firewall change needed. This was interrupted before completion.
+## Fix applied
 
-### Remaining steps to actually finish this
+- Both `.csproj`: replaced `Aspire.Npgsql.EntityFrameworkCore.PostgreSQL` with
+  `Aspire.Azure.Npgsql.EntityFrameworkCore.PostgreSQL` (13.4.6). The explicit
+  `Azure.Identity` reference is **kept and is load-bearing** — the Aspire Azure
+  package builds a `DefaultAzureCredential` but only depends on `Azure.Core`,
+  so without a direct reference `Azure.Identity.dll` is not copied to the
+  output and the credential fails to load at runtime. (Verified: it is absent
+  from `deps.json` when the reference is removed.)
+- Both `Program.cs`: deleted the hand-rolled `NpgsqlDataSourceBuilder` /
+  `UsePeriodicPasswordProvider` / `DefaultAzureCredential` block — which
+  supplied the password but not the username, hence the failure — and replaced
+  `AddNpgsqlDbContext` with `AddAzureNpgsqlDbContext`.
+- `Ssl Mode=Require` is now applied only when not in Development. The local
+  Aspire Postgres container serves plaintext, so forcing TLS unconditionally
+  (as the previous fix did) would have broken `aspire run` locally.
+  `Gss Encryption Mode=Disable` stays unconditional: the base image genuinely
+  ships no krb5 libraries (`runtime-deps` installs only `libc6`, `libgcc-s1`,
+  `libicu74`, `libssl3t64`, `libstdc++6`, `tzdata`), so the finding in §3 was
+  correct.
 
-1. Get a `psql` (or any Postgres client) session running from *inside* Azure
-   (already-allowed network path), authenticated as the `mi-yudlalf6hmivo`
-   admin identity or as `memjkt@gmail.com` (temp admin, still active). Options:
-   - `az containerapp exec` into the running `frontend` replica and run
-     `psql` from there if a client is available in that image, or
-   - spin up a short-lived Azure Container Apps Job (or `az container` /ACI)
-     using the `postgres:16` image with the managed identity attached, run
-     the SQL, then delete the job.
-2. Run the SQL block above.
-3. Redeploy (or just wait — the running containers already have the correct
-   code from the last `azd deploy`; they'll succeed on their next restart
-   attempt in the crash-loop backoff cycle, but a fresh `azd deploy` /
-   `az containerapp revision restart` is cleaner to verify immediately).
-4. Confirm both `encouragement-api` and `contacts-api` come up healthy
-   (`az containerapp replica list`).
-5. Clean up: remove the temporary Entra admin (`memjkt@gmail.com`) added in
-   step 1 above.
+`dotnet build` succeeds and `Azure.Identity.dll` is present in both outputs.
 
-## Code changes made so far (already committed to working tree, not yet needing further changes)
+## Remaining steps
 
-- `backend/encouragement-api/Program.cs`, `backend/contacts-api/Program.cs`:
-  connection string now includes `Gss Encryption Mode=Disable;Ssl Mode=Require`;
-  both build an explicit `NpgsqlDataSource` with `UsePeriodicPasswordProvider`
-  backed by `DefaultAzureCredential`, wired into EF Core via
-  `configureDbContextOptions: options => options.UseNpgsql(dataSource)`.
-- `backend/encouragement-api/encouragement-api.csproj`,
-  `backend/contacts-api/contacts-api.csproj`: added
-  `PackageReference Include="Azure.Identity" Version="1.21.0"`.
+1. `azd deploy` (or `az containerapp revision restart`) both APIs.
+2. Confirm both replicas reach Running (`az containerapp replica list`) and
+   that `POST /encouragements` returns 201 rather than 504.
+3. Watch for one possible follow-on: `db.Database.Migrate()` needs `CREATE` on
+   `public`. `mi-yudlalf6hmivo` is a member of `azure_pg_admin` so this should
+   pass, but if it fails with `permission denied for schema public` (Postgres
+   16 no longer grants `CREATE` on `public` to `PUBLIC`), run
+   `GRANT CREATE, USAGE ON SCHEMA public TO "mi-yudlalf6hmivo";` in each
+   database.
 
-No further app-code changes should be needed — the remaining work is purely
-on the Postgres role/grants side, per "Remaining steps" above.
+## Not done: least privilege
+
+The app now connects as the server's Entra **admin**. That is Aspire's shipped
+default — its generated `postgres-roles` module registers the app's identity as
+`flexibleServers/administrators`, and there is no non-admin role provisioning
+in the box — but it is not least privilege. Two ways to tighten it later, both
+requiring a one-off SQL session from inside Azure (a short-lived Container Apps
+job or ACI running `postgres:16` with `mi-yudlalf6hmivo` attached reaches the
+server through the existing `AllowAllAzureIps` rule — no firewall change and no
+personal admin grant needed):
+
+- **Cheap:** create a non-admin role mapped to the *same* object id, e.g.
+  `pgaadauth_create_principal_with_oid('app', '92057908-…', 'service', false, false)`,
+  grant it only what each database needs, and pin the role explicitly with
+  `settings.ConnectionString += ";Username=app"` — `AddAzureNpgsqlDbContext`
+  honours an explicit username and only infers when it is blank. Verify the
+  duplicate-oid mapping with `SELECT * FROM pgaadauth_list_principals(false);`
+  before relying on it.
+- **Proper:** give each API its own user-assigned identity
+  (`AddAzureUserAssignedIdentity` / `WithAzureUserAssignedIdentity`, both
+  present in Aspire.Hosting.Azure 13.4.6), register each as a non-admin
+  Postgres role, and grant it only its own database. Username inference then
+  resolves per-service with no connection-string overrides.
+
+## Superseded
+
+The earlier plan — creating an Entra-linked role named `app`, and the hunt for
+a network path to run that SQL (temp Entra admin for `memjkt@gmail.com`,
+firewall rule for a home IP, `az containerapp exec` into the frontend) — was
+built on the incorrect `Username=app` diagnosis and is no longer needed. The
+temporary Entra admin grant was already removed; no cleanup is outstanding.
