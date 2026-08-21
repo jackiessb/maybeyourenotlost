@@ -4,6 +4,7 @@ import EncourageSomeone from "./pages/EncourageSomeone";
 import BeEncouraged from "./pages/BeEncouraged";
 import { Toaster } from "./components/ui/toast";
 import { NavMenu } from "./components-mynl/NavMenu";
+import { VideoBackground } from "./components-mynl/VideoBackground";
 
 type Page = "home" | "encourage-someone" | "be-encouraged";
 
@@ -12,8 +13,9 @@ function App() {
 
   return (
     <>
+      <VideoBackground />
       <NavMenu></NavMenu>
-      <div className="flex flex-col p-5 h-screen">
+      <div className="relative z-10 flex flex-col p-5 h-screen">
         {/* Top Section */}
         <div className="flex flex-col h-1/2 gap-4">
           <div className="flex flex-col gap-2 text-3xl font-bold">
