@@ -16,14 +16,20 @@ const signUp = async (number: string) => {
   }
 };
 
-function BeEncouraged() {
+interface BeEncouragedProps {
+  onBackToHome: () => void;
+}
+
+function BeEncouraged({ onBackToHome }: BeEncouragedProps) {
   const [number, setNumber] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isSubmitted, setIsSubmitted] = useState(false);
 
   const handleSubmit = async () => {
     setIsSubmitting(true);
     try {
       await signUp(number);
+      setIsSubmitted(true);
     } catch {
       toast.add({
         title: "Something went wrong",
@@ -35,34 +41,49 @@ function BeEncouraged() {
     }
   };
 
-  return (
-    <Field className="pt-10">
-      <FieldLabel htmlFor="input-number">
-        Enter your phone number below.
-      </FieldLabel>
-      <FieldDescription>
-        We will send encouragement written by an anonymous believer straight to
-        your phone once a week.
-      </FieldDescription>
-      <FieldDescription>
-        <span className="italic">United States only</span> (for now).
-      </FieldDescription>
-      <div className="flex flex-col gap-3">
-        <input
-          id="input-number"
-          type="tel"
-          value={number}
-          placeholder="(123)-456-7890"
-          onChange={(e) => setNumber(e.target.value)}
-          className="flex h-9 w-full rounded-2xl border border-transparent bg-input px-2.5 py-2 text-base transition-[color,box-shadow] duration-200 outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30 md:text-sm"
-        />
-        <Button onClick={handleSubmit} disabled={isSubmitting}>
-          {isSubmitting && <Spinner></Spinner>}
-          Be Encouraged
-        </Button>
-      </div>
-    </Field>
-  );
+  if (!isSubmitted) {
+    return (
+      <Field className="pt-10">
+        <FieldLabel htmlFor="input-number">
+          Enter your phone number below.
+        </FieldLabel>
+        <FieldDescription>
+          We will send encouragement written by an anonymous believer straight
+          to your phone once a week.
+        </FieldDescription>
+        <FieldDescription>
+          <span className="italic">United States only</span> (for now).
+        </FieldDescription>
+        <div className="flex flex-col gap-3">
+          <input
+            id="input-number"
+            type="tel"
+            value={number}
+            placeholder="(123)-456-7890"
+            onChange={(e) => setNumber(e.target.value)}
+            className="flex h-9 w-full rounded-2xl border border-transparent bg-input px-2.5 py-2 text-base transition-[color,box-shadow] duration-200 outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30 md:text-sm"
+          />
+          <Button onClick={handleSubmit} disabled={isSubmitting}>
+            {isSubmitting && <Spinner></Spinner>}
+            Be Encouraged
+          </Button>
+        </div>
+      </Field>
+    );
+  } else {
+    return (
+      <Field className="pt-10">
+        <FieldLabel htmlFor="input-number">
+          You are loved, of infinite worth, and seen by an Almighty God.
+        </FieldLabel>
+        <FieldDescription>
+          If you have encouragement to share with another believer, feel free to
+          click below and encourage someone.
+        </FieldDescription>
+        <Button onClick={onBackToHome}>Back To Home</Button>
+      </Field>
+    );
+  }
 }
 
 export default BeEncouraged;

@@ -18,7 +18,7 @@ function App() {
         <NavMenu></NavMenu>
         <div className="flex flex-col flex-1 min-h-0 p-5">
           {/* Top Section */}
-          <div className="flex flex-col h-1/2 gap-4">
+          <div className="flex flex-row justify-between h-1/2 gap-4">
             <div className="flex flex-col gap-2 text-3xl font-bold">
               <span>Maybe</span>
               <span>You're</span>
@@ -34,8 +34,12 @@ function App() {
                 onBeEncouraged={() => setPage("be-encouraged")}
               />
             )}
-            {page === "encourage-someone" && <EncourageSomeone />}
-            {page === "be-encouraged" && <BeEncouraged />}
+            {page === "encourage-someone" && (
+              <EncourageSomeone onBackToHome={() => setPage("home")} />
+            )}
+            {page === "be-encouraged" && (
+              <BeEncouraged onBackToHome={() => setPage("home")} />
+            )}
           </div>
           <Toaster />
         </div>

@@ -17,7 +17,11 @@ const encourageSomeone = async (encouragement: string) => {
   }
 };
 
-function EncourageSomeone() {
+interface EncourageSomeoneProps {
+  onBackToHome: () => void;
+}
+
+function EncourageSomeone({ onBackToHome }: EncourageSomeoneProps) {
   const [encouragement, setEncouragement] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSubmitted, setIsSubmitted] = useState(false);
@@ -66,7 +70,7 @@ function EncourageSomeone() {
   } else {
     return (
       <>
-        <Field className="pt-20">
+        <Field className="pt-8">
           <FieldLabel htmlFor="textarea-encouragement">Thank you.</FieldLabel>
           <FieldDescription>
             Your words will be used to lift someone else up.{" "}
@@ -75,6 +79,7 @@ function EncourageSomeone() {
             If you are struggling and need to be encouraged, consider
             subscribing to our registry to recieve encouragement weekly.{" "}
           </FieldDescription>
+          <Button onClick={onBackToHome}>Back To Home</Button>
         </Field>
       </>
     );
