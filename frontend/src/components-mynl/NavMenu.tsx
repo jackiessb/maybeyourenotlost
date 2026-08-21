@@ -9,7 +9,7 @@ import { Menu } from "lucide-react";
 
 export function NavMenu() {
   return (
-    <div className="relative z-10 flex flex-row items-center justify-between bg-black/30 px-5 backdrop-blur-md">
+    <div className="relative z-1 flex flex-row items-center justify-between bg-black/30 px-5 backdrop-blur-md">
       <span className="text-white font-bold">MYNL</span>
       <Menubar className="border-0">
         <MenubarMenu>

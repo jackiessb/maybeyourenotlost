@@ -14,32 +14,31 @@ function App() {
   return (
     <>
       <VideoBackground />
-      <NavMenu></NavMenu>
-      <div className="relative z-10 flex flex-col p-5 h-screen">
-        {/* Top Section */}
-        <div className="flex flex-col h-1/2 gap-4">
-          <div className="flex flex-col gap-2 text-3xl font-bold">
-            <span>Maybe</span>
-            <span>You're</span>
-            <span>Not</span>
-            <span>Lost.</span>
+      <div className="relative z-1 flex flex-col h-dvh">
+        <NavMenu></NavMenu>
+        <div className="flex flex-col flex-1 min-h-0 p-5">
+          {/* Top Section */}
+          <div className="flex flex-col h-1/2 gap-4">
+            <div className="flex flex-col gap-2 text-3xl font-bold">
+              <span>Maybe</span>
+              <span>You're</span>
+              <span>Not</span>
+              <span>Lost.</span>
+            </div>
           </div>
-          <span className="text-sm w-1/2">
-            You're right where you need to be.
-          </span>
+          {/* Rest of Page */}
+          <div className="flex flex-col flex-1 min-h-0">
+            {page === "home" && (
+              <Home
+                onEncourageSomeone={() => setPage("encourage-someone")}
+                onBeEncouraged={() => setPage("be-encouraged")}
+              />
+            )}
+            {page === "encourage-someone" && <EncourageSomeone />}
+            {page === "be-encouraged" && <BeEncouraged />}
+          </div>
+          <Toaster />
         </div>
-        {/* Rest of Page */}
-        <div className="flex flex-col flex-1">
-          {page === "home" && (
-            <Home
-              onEncourageSomeone={() => setPage("encourage-someone")}
-              onBeEncouraged={() => setPage("be-encouraged")}
-            />
-          )}
-          {page === "encourage-someone" && <EncourageSomeone />}
-          {page === "be-encouraged" && <BeEncouraged />}
-        </div>
-        <Toaster />
       </div>
     </>
   );

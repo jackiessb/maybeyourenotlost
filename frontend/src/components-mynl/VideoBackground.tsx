@@ -12,9 +12,8 @@ function prefersStillBackground() {
     "(prefers-reduced-motion: reduce)",
   ).matches;
   const saveData =
-    (
-      navigator as Navigator & { connection?: { saveData?: boolean } }
-    ).connection?.saveData === true;
+    (navigator as Navigator & { connection?: { saveData?: boolean } })
+      .connection?.saveData === true;
 
   return reducedMotion || saveData;
 }
@@ -39,7 +38,7 @@ export function VideoBackground() {
   return (
     <div
       aria-hidden
-      className="pointer-events-none fixed inset-0 -z-10 overflow-hidden bg-background"
+      className="pointer-events-none fixed inset-0 -z-1 overflow-hidden bg-background"
     >
       <img
         src={POSTER_SRC}

@@ -20,11 +20,13 @@ const encourageSomeone = async (encouragement: string) => {
 function EncourageSomeone() {
   const [encouragement, setEncouragement] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isSubmitted, setIsSubmitted] = useState(false);
 
   const handleSubmit = async () => {
     setIsSubmitting(true);
     try {
       await encourageSomeone(encouragement);
+      setIsSubmitted(true);
     } catch {
       toast.add({
         title: "Something went wrong",
@@ -36,25 +38,47 @@ function EncourageSomeone() {
     }
   };
 
-  return (
-    <Field>
-      <FieldLabel htmlFor="textarea-encouragement">
-        Say anything lovely
-      </FieldLabel>
-      <FieldDescription>Be love to someone else.</FieldDescription>
-      <div className="flex flex-col gap-3">
-        <Textarea
-          id="textarea-encouragement"
-          value={encouragement}
-          onChange={(e) => setEncouragement(e.target.value)}
-        ></Textarea>
-        <Button onClick={handleSubmit} disabled={isSubmitting}>
-          {isSubmitting && <Spinner></Spinner>}
-          Send Encouragement
-        </Button>
-      </div>
-    </Field>
-  );
+  if (!isSubmitted) {
+    return (
+      <Field>
+        <FieldLabel htmlFor="textarea-encouragement">
+          Type a message below for a believer who is struggling to find hope,
+          and needs a reason to carry on trusting in Jesus to sustain them.
+        </FieldLabel>
+        <FieldDescription>
+          The most helpful messages are personal, grounded in truth and hope
+          without preaching or oversimplifying their pain.{" "}
+        </FieldDescription>
+        <div className="flex flex-col gap-3">
+          <Textarea
+            className="bg-input max-h-16 overflow-auto"
+            id="textarea-encouragement"
+            value={encouragement}
+            onChange={(e) => setEncouragement(e.target.value)}
+          ></Textarea>
+          <Button onClick={handleSubmit} disabled={isSubmitting}>
+            {isSubmitting && <Spinner></Spinner>}
+            Send Encouragement
+          </Button>
+        </div>
+      </Field>
+    );
+  } else {
+    return (
+      <>
+        <Field className="pt-20">
+          <FieldLabel htmlFor="textarea-encouragement">Thank you.</FieldLabel>
+          <FieldDescription>
+            Your words will be used to lift someone else up.{" "}
+          </FieldDescription>
+          <FieldDescription>
+            If you are struggling and need to be encouraged, consider
+            subscribing to our registry to recieve encouragement weekly.{" "}
+          </FieldDescription>
+        </Field>
+      </>
+    );
+  }
 }
 
 export default EncourageSomeone;
