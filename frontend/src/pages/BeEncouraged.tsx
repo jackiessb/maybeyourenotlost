@@ -36,7 +36,7 @@ function BeEncouraged() {
   };
 
   return (
-    <Field className="pt-20">
+    <Field className="pt-10">
       <FieldLabel htmlFor="input-number">
         Enter your phone number below.
       </FieldLabel>
