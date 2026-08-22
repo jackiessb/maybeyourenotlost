@@ -14,6 +14,14 @@ function Home({ onEncourageSomeone, onBeEncouraged }: HomeProps) {
       <Button className="text-xl" onClick={onBeEncouraged}>
         Be Encouraged
       </Button>
+      <Button
+        className="text-xl"
+        onClick={() => {
+          window.location.href = "https://gofund.me/c2c3e4d39";
+        }}
+      >
+        Give
+      </Button>
     </div>
   );
 }

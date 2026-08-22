@@ -24,6 +24,13 @@ export function NavMenu({ onBackToHome, onToAbout }: NavMenuProps) {
           <MenubarContent>
             <MenubarItem onClick={onBackToHome}>Home</MenubarItem>
             <MenubarItem onClick={onToAbout}>About</MenubarItem>
+            <MenubarItem
+              onClick={() => {
+                window.location.href = "https://gofund.me/c2c3e4d39";
+              }}
+            >
+              Give
+            </MenubarItem>
           </MenubarContent>
         </MenubarMenu>
       </Menubar>
