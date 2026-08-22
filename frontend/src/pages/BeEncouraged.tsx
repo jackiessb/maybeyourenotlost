@@ -3,6 +3,7 @@ import { Button } from "../components/ui/button";
 import { Field, FieldDescription, FieldLabel } from "../components/ui/field";
 import { Spinner } from "@/components/ui/spinner";
 import { toast } from "@/components/ui/toast";
+import { formatPhoneNumber, toE164 } from "@/lib/phone";
 
 const signUp = async (number: string) => {
   const response = await fetch("/contacts", {
@@ -26,9 +27,19 @@ function BeEncouraged({ onBackToHome }: BeEncouragedProps) {
   const [isSubmitted, setIsSubmitted] = useState(false);
 
   const handleSubmit = async () => {
+    const phoneNumber = toE164(number);
+    if (!phoneNumber) {
+      toast.add({
+        title: "Invalid phone number",
+        description: "Please enter a valid 10-digit US phone number.",
+        type: "error",
+      });
+      return;
+    }
+
     setIsSubmitting(true);
     try {
-      await signUp(number);
+      await signUp(phoneNumber);
       setIsSubmitted(true);
     } catch {
       toast.add({
@@ -59,8 +70,11 @@ function BeEncouraged({ onBackToHome }: BeEncouragedProps) {
             id="input-number"
             type="tel"
             value={number}
-            placeholder="(123)-456-7890"
-            onChange={(e) => setNumber(e.target.value)}
+            placeholder="(123) 456-7890"
+            autoComplete="tel-national"
+            inputMode="numeric"
+            maxLength={14}
+            onChange={(e) => setNumber(formatPhoneNumber(e.target.value))}
             className="flex h-9 w-full rounded-2xl border border-transparent bg-input px-2.5 py-2 text-base transition-[color,box-shadow] duration-200 outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30 md:text-sm"
           />
           <Button onClick={handleSubmit} disabled={isSubmitting}>
@@ -72,7 +86,7 @@ function BeEncouraged({ onBackToHome }: BeEncouragedProps) {
     );
   } else {
     return (
-      <Field className="pt-10">
+      <Field className="pt-15">
         <FieldLabel htmlFor="input-number">
           You are loved, of infinite worth, and seen by an Almighty God.
         </FieldLabel>

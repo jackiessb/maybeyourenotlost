@@ -7,7 +7,12 @@ import {
 } from "@/components/ui/menubar";
 import { Menu } from "lucide-react";
 
-export function NavMenu() {
+interface NavMenuProps {
+  onBackToHome: () => void;
+  onToAbout: () => void;
+}
+
+export function NavMenu({ onBackToHome, onToAbout }: NavMenuProps) {
   return (
     <div className="relative z-1 flex flex-row items-center justify-between bg-black/30 px-5 backdrop-blur-md">
       <span className="text-white font-bold">MYNL</span>
@@ -17,9 +22,8 @@ export function NavMenu() {
             <Menu color="white" />
           </MenubarTrigger>
           <MenubarContent>
-            <MenubarItem onClick={() => {}}>Home</MenubarItem>
-            <MenubarItem onClick={() => {}}>Encourage Someone</MenubarItem>
-            <MenubarItem onClick={() => {}}>Be Encouraged</MenubarItem>
+            <MenubarItem onClick={onBackToHome}>Home</MenubarItem>
+            <MenubarItem onClick={onToAbout}>About</MenubarItem>
           </MenubarContent>
         </MenubarMenu>
       </Menubar>

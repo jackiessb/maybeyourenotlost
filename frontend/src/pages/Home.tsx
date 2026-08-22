@@ -7,7 +7,7 @@ interface HomeProps {
 
 function Home({ onEncourageSomeone, onBeEncouraged }: HomeProps) {
   return (
-    <div className="flex flex-col gap-3 pt-40 px-2">
+    <div className="flex flex-col gap-3 pt-30 px-2">
       <Button className="text-xl" onClick={onEncourageSomeone}>
         Encourage Someone
       </Button>
