@@ -10,7 +10,14 @@ builder.Services.AddOpenApi();
 
 // The mcr.microsoft.com/dotnet/aspnet base image ships no libgssapi_krb5.so.2, so Npgsql's
 // GSS encryption negotiation throws on connect. GSS is Kerberos-only and unused here.
-var connectionParams = ";Gss Encryption Mode=Disable";
+// Npgsql pools per process, so the ceiling that matters is (pool size x replica count).
+// The server is a B1ms burstable with max_connections=50 and a few of those reserved for
+// Azure's own monitoring, while Npgsql's default pool is 100 per replica -- two APIs scaling
+// out would exhaust the server long before they exhaust a pool. Both APIs are capped to 3
+// replicas (see scripts/apply-scale.sh), so 5 each bounds the pair at 30 connections. Every
+// request here is a single-row insert or lookup that holds its connection for a few
+// milliseconds, so 5 is far more throughput than a B1ms can commit anyway.
+var connectionParams = ";Gss Encryption Mode=Disable;Maximum Pool Size=5";
 
 // Azure Postgres Flexible Server runs with require_secure_transport=on, and disabling GSS makes
 // Npgsql skip SSL negotiation instead of falling through to it, so TLS has to be forced
