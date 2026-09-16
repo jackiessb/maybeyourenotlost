@@ -1,5 +1,8 @@
 var builder = DistributedApplication.CreateBuilder(args);
 
+// WithAzdResourceNaming keeps the names of the resources azd already provisioned.
+builder.AddAzureContainerAppEnvironment("cae").WithAzdResourceNaming();
+
 var postgres = builder.AddAzurePostgresFlexibleServer("postgres")
     .RunAsContainer(container => container.WithPgAdmin());
 
@@ -25,7 +28,7 @@ var frontend = builder.AddJavaScriptApp("frontend", "../frontend", "dev")
 
 if (builder.ExecutionContext.IsPublishMode)
 {
-    const string frontendOrigin = "https://love.maybeyourenotlost.com";
+    var frontendOrigin = builder.AddParameter("frontendOrigin");
     encouragementApi.WithEnvironment("Frontend__Origin", frontendOrigin);
     contactsApi.WithEnvironment("Frontend__Origin", frontendOrigin);
 

@@ -22,3 +22,6 @@ obj/
 .DS_Store
 .idea/
 .azure
+
+# Aspire publish output
+out/
