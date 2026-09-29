@@ -6,7 +6,7 @@ set -euo pipefail
 # binding added out-of-band. That silently drops the binding (and cert) on
 # each redeploy, so re-bind it here as a postprovision/postdeploy hook.
 
-HOSTNAME="love.maybeyourenotlost.com"
+HOSTNAME="${CUSTOM_DOMAIN:-love.maybeyourenotlost.com}"
 CONTAINER_APP="frontend"
 
 RESOURCE_GROUP=$(echo "$AZURE_CONTAINER_APPS_ENVIRONMENT_ID" | sed -n 's#.*/resourceGroups/\([^/]*\)/.*#\1#p')

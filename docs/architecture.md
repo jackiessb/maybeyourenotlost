@@ -12,7 +12,13 @@ All containerized pieces of the application are hosted in Microsoft Azure:
 
 ## Authorization
 
-TODO
+Leveraging Aspire, authentication is handled by a generated Managed Identity that the API gets a reference to.
+
+```c#
+var encouragementApi = builder.AddProject<Projects.encouragement_api>("encouragement-api")
+    .WithReference(encouragementDb)
+    .WaitFor(encouragementDb);
+```
 
 ## General Purpose
 

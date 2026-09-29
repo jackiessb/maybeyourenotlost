@@ -10,9 +10,19 @@ var encouragementDb = postgres.AddDatabase("encouragement");
 var contactsDb = postgres.AddDatabase("contacts");
 
 var encouragementApi = builder.AddProject<Projects.encouragement_api>("encouragement-api")
+    .PublishAsAzureContainerApp((infrastructure, app) =>
+    {
+        app.Template.Scale.MinReplicas = 1;
+        app.Template.Scale.MaxReplicas = 2;
+    })
     .WithReference(encouragementDb)
     .WaitFor(encouragementDb);
 var contactsApi = builder.AddProject<Projects.contacts_api>("contacts-api")
+    .PublishAsAzureContainerApp((infrastructure, app) =>
+    {
+        app.Template.Scale.MinReplicas = 1;
+        app.Template.Scale.MaxReplicas = 2;
+    })
     .WithReference(contactsDb)
     .WaitFor(contactsDb);
 

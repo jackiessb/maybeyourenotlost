@@ -1,0 +1,109 @@
+name: Deploy production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  ASPIRE_ENVIRONMENT: production
+  CUSTOM_DOMAIN: love.maybeyourenotlost.com
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://love.maybeyourenotlost.com
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Restore frontend
+        working-directory: frontend
+        run: npm ci
+
+      - name: Lint frontend
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Build AppHost
+        run: dotnet build apphost/AppHost.csproj -c Release
+
+      - name: Install Aspire CLI
+        run: |
+          curl -sSL https://aspire.dev/install.sh | bash
+          echo "$HOME/.aspire/bin" >> "$GITHUB_PATH"
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          
+      - name: aspire publish (dry run)
+        env:
+          Azure__SubscriptionId: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          Azure__ResourceGroup: ${{ secrets.AZURE_RESOURCE_GROUP }}
+          Azure__Location: ${{ vars.AZURE_LOCATION }}
+        run: |
+          aspire publish \
+            --project apphost/AppHost.csproj \
+            --environment "$ASPIRE_ENVIRONMENT" \
+            --output-path ./out \
+            --non-interactive
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: production-manifest
+          path: ./out
+          retention-days: 14
+
+      - name: aspire deploy
+        env:
+          Azure__SubscriptionId: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          Azure__ResourceGroup: ${{ secrets.AZURE_RESOURCE_GROUP }}
+          Azure__Location: ${{ vars.AZURE_LOCATION }}
+        run: |
+          aspire deploy \
+            --project apphost/AppHost.csproj \
+            --environment "$ASPIRE_ENVIRONMENT" \
+            --non-interactive
+
+      - name: Bind custom domain
+        env:
+          AZURE_RESOURCE_GROUP: ${{ secrets.AZURE_RESOURCE_GROUP }}
+        run: |
+          ENV_ID=$(az containerapp env list -g "$AZURE_RESOURCE_GROUP" --query "[0].id" -o tsv)
+          ENV_NAME=$(az containerapp env list -g "$AZURE_RESOURCE_GROUP" --query "[0].name" -o tsv)
+          AZURE_CONTAINER_APPS_ENVIRONMENT_ID="$ENV_ID" \
+          AZURE_CONTAINER_APPS_ENVIRONMENT_NAME="$ENV_NAME" \
+          CUSTOM_DOMAIN="$CUSTOM_DOMAIN" \
+            ./scripts/bind-custom-domain.sh
+
+      - name: Smoke test
+        run: |
+          curl --fail --silent --show-error --retry 5 --retry-delay 10 \
+            --retry-all-errors "https://$CUSTOM_DOMAIN/" > /dev/null
