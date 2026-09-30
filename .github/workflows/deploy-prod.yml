@@ -62,7 +62,10 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-          
+
+      - name: Install Bicep
+        run: az bicep install
+
       - name: aspire publish (dry run)
         env:
           Azure__SubscriptionId: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
@@ -91,19 +94,3 @@ jobs:
             --project apphost/AppHost.csproj \
             --environment "$ASPIRE_ENVIRONMENT" \
             --non-interactive
-
-      - name: Bind custom domain
-        env:
-          AZURE_RESOURCE_GROUP: ${{ secrets.AZURE_RESOURCE_GROUP }}
-        run: |
-          ENV_ID=$(az containerapp env list -g "$AZURE_RESOURCE_GROUP" --query "[0].id" -o tsv)
-          ENV_NAME=$(az containerapp env list -g "$AZURE_RESOURCE_GROUP" --query "[0].name" -o tsv)
-          AZURE_CONTAINER_APPS_ENVIRONMENT_ID="$ENV_ID" \
-          AZURE_CONTAINER_APPS_ENVIRONMENT_NAME="$ENV_NAME" \
-          CUSTOM_DOMAIN="$CUSTOM_DOMAIN" \
-            ./scripts/bind-custom-domain.sh
-
-      - name: Smoke test
-        run: |
-          curl --fail --silent --show-error --retry 5 --retry-delay 10 \
-            --retry-all-errors "https://$CUSTOM_DOMAIN/" > /dev/null

@@ -6,11 +6,3 @@ services:
     language: dotnet
     project: ./apphost/AppHost.csproj
     host: containerapp
-
-hooks:
-  postprovision:
-    shell: sh
-    run: '"./scripts/bind-custom-domain.sh" && "./scripts/apply-scale.sh"'
-  postdeploy:
-    shell: sh
-    run: '"./scripts/bind-custom-domain.sh" && "./scripts/apply-scale.sh"'

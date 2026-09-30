@@ -20,6 +20,7 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
     # Fork PRs cannot mint an OIDC token; the job would fail confusingly.
     if: github.event.pull_request.head.repo.fork != true
     environment:
@@ -65,6 +66,9 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Install Bicep
+        run: az bicep install
+
       - name: aspire deploy
         env:
           Azure__SubscriptionId: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
@@ -75,17 +79,6 @@ jobs:
             --project apphost/AppHost.csproj \
             --environment "$ASPIRE_ENVIRONMENT" \
             --non-interactive
-
-      - name: Bind custom domain
-        env:
-          AZURE_RESOURCE_GROUP: ${{ secrets.AZURE_RESOURCE_GROUP }}
-        run: |
-          ENV_ID=$(az containerapp env list -g "$AZURE_RESOURCE_GROUP" --query "[0].id" -o tsv)
-          ENV_NAME=$(az containerapp env list -g "$AZURE_RESOURCE_GROUP" --query "[0].name" -o tsv)
-          AZURE_CONTAINER_APPS_ENVIRONMENT_ID="$ENV_ID" \
-          AZURE_CONTAINER_APPS_ENVIRONMENT_NAME="$ENV_NAME" \
-          CUSTOM_DOMAIN="$CUSTOM_DOMAIN" \
-            ./scripts/bind-custom-domain.sh
 
       - name: Comment dev URL on PR
         if: github.event_name == 'pull_request'
