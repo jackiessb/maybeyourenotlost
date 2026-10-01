@@ -1,0 +1,91 @@
+name: dev
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+env:
+  ASPIRE_ENVIRONMENT: dev-b
+  CUSTOM_DOMAIN: dev.maybeyourenotlost.com
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.head.repo.fork != true
+    environment:
+      name: dev
+      url: https://dev.maybeyourenotlost.com
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Restore frontend
+        working-directory: frontend
+        run: npm ci
+
+      - name: Lint frontend
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Build AppHost
+        run: dotnet build apphost/AppHost.csproj -c Release
+
+      - name: Install Aspire CLI
+        run: |
+          curl -sSL https://aspire.dev/install.sh | bash
+          echo "$HOME/.aspire/bin" >> "$GITHUB_PATH"
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Install Bicep
+        run: az bicep install
+
+      - name: aspire deploy
+        env:
+          Azure__SubscriptionId: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          Azure__ResourceGroup: ${{ secrets.AZURE_RESOURCE_GROUP }}
+          Azure__Location: ${{ vars.AZURE_LOCATION }}
+        run: |
+          aspire deploy \
+            --project apphost/AppHost.csproj \
+            --environment "$ASPIRE_ENVIRONMENT" \
+            --non-interactive
+
+      - name: Comment dev URL on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `Deployed to dev: https://${process.env.CUSTOM_DOMAIN}`
+            });

@@ -1,17 +1,34 @@
 var builder = DistributedApplication.CreateBuilder(args);
 
+// WithAzdResourceNaming keeps the names of the resources azd already provisioned.
+builder.AddAzureContainerAppEnvironment("cae").WithAzdResourceNaming();
+
 var postgres = builder.AddAzurePostgresFlexibleServer("postgres")
     .RunAsContainer(container => container.WithPgAdmin());
 
 var encouragementDb = postgres.AddDatabase("encouragement");
 var contactsDb = postgres.AddDatabase("contacts");
 
+var customDomain = builder.AddParameter("customDomain");
+var certificateName = builder.AddParameter("certificateName");
+
 var encouragementApi = builder.AddProject<Projects.encouragement_api>("encouragement-api")
     .WithReference(encouragementDb)
-    .WaitFor(encouragementDb);
+    .WaitFor(encouragementDb)
+    .PublishAsAzureContainerApp((infrastructure, app) =>
+    {
+        app.Template.Scale.MinReplicas = 1;
+        app.Template.Scale.MaxReplicas = 3;
+    });
+
 var contactsApi = builder.AddProject<Projects.contacts_api>("contacts-api")
     .WithReference(contactsDb)
-    .WaitFor(contactsDb);
+    .WaitFor(contactsDb)
+    .PublishAsAzureContainerApp((infrastructure, app) =>
+    {
+        app.Template.Scale.MinReplicas = 1;
+        app.Template.Scale.MaxReplicas = 3;
+    });
 
 #pragma warning disable ASPIREJAVASCRIPT001
 var frontend = builder.AddJavaScriptApp("frontend", "../frontend", "dev")
@@ -20,19 +37,21 @@ var frontend = builder.AddJavaScriptApp("frontend", "../frontend", "dev")
     .WithReference(encouragementApi)
     .WithReference(contactsApi)
     .WithBuildScript("build")
-    .PublishAsStaticWebsite("/contacts", contactsApi);
+    .PublishAsStaticWebsite("/contacts", contactsApi)
+    .PublishAsAzureContainerApp((infrastructure, app) =>
+    {
+        app.Template.Scale.MinReplicas = 2;
+        app.Template.Scale.MaxReplicas = 10;
+        app.ConfigureCustomDomain(customDomain, certificateName);
+    });
 #pragma warning restore ASPIREJAVASCRIPT001
 
 if (builder.ExecutionContext.IsPublishMode)
 {
-    const string frontendOrigin = "https://love.maybeyourenotlost.com";
+    var frontendOrigin = builder.AddParameter("frontendOrigin");
     encouragementApi.WithEnvironment("Frontend__Origin", frontendOrigin);
     contactsApi.WithEnvironment("Frontend__Origin", frontendOrigin);
 
-    // PublishAsStaticWebsite always writes its YARP route/cluster under the fixed id "api",
-    // so a second chained call for encouragementApi silently overwrote the contactsApi route
-    // instead of adding to it. Register the second route by hand using the same env var
-    // contract the helper uses, under a distinct id.
     frontend
         .WithEnvironment("REVERSEPROXY__ROUTES__encouragements__CLUSTERID", "encouragements")
         .WithEnvironment("REVERSEPROXY__ROUTES__encouragements__MATCH__PATH", "/encouragements/{**catch-all}")
