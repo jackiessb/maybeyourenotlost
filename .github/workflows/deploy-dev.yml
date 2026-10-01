@@ -1,4 +1,4 @@
-name: Deploy dev
+name: dev
 
 on:
   pull_request:
@@ -20,8 +20,6 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
-    # Fork PRs cannot mint an OIDC token; the job would fail confusingly.
     if: github.event.pull_request.head.repo.fork != true
     environment:
       name: dev
