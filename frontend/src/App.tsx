@@ -8,19 +8,20 @@ import { NavMenu } from "./components-mynl/NavMenu";
 import { VideoBackground } from "./components-mynl/VideoBackground";
 import { usePageTransition } from "./lib/usePageTransition";
 import { X } from "lucide-react";
+import { useLocalStorage } from "./lib/useLocalStorage";
 
 type Page = "home" | "encourage-someone" | "be-encouraged" | "about";
 
 function App() {
-  const hasReadDisclaimer = localStorage.getItem("hasReadDisclaimer");
   const [page, setPage] = useState<Page>("home");
   const { rendered, visible } = usePageTransition(page);
+  const { value, setValue } = useLocalStorage("hasReadDisclaimer");
 
   return (
     <>
       <VideoBackground />
       <div className="relative z-1 flex flex-col h-dvh">
-        {!hasReadDisclaimer && (
+        {value !== "true" && (
           <div className="flex flex-row p-3 items-center">
             <div>
               <span>
@@ -34,7 +35,7 @@ function App() {
               <X
                 size="32"
                 onClick={() => {
-                  localStorage.setItem("hasReadDisclaimer", "true");
+                  setValue("true");
                 }}
               ></X>
             </span>
