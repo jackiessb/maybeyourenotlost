@@ -7,17 +7,40 @@ import { Toaster } from "./components/ui/toast";
 import { NavMenu } from "./components-mynl/NavMenu";
 import { VideoBackground } from "./components-mynl/VideoBackground";
 import { usePageTransition } from "./lib/usePageTransition";
+import { X } from "lucide-react";
+import { useLocalStorage } from "./lib/useLocalStorage";
 
 type Page = "home" | "encourage-someone" | "be-encouraged" | "about";
 
 function App() {
   const [page, setPage] = useState<Page>("home");
   const { rendered, visible } = usePageTransition(page);
+  const { value, setValue } = useLocalStorage("hasReadDisclaimer");
 
   return (
     <>
       <VideoBackground />
       <div className="relative z-1 flex flex-col h-dvh">
+        {value !== "true" && (
+          <div className="flex flex-row p-3 items-center justify-between">
+            <div>
+              <span>
+                Maybe You're Not Lost is not a crisis hotline. If you are in
+                crisis, please call <span className="font-bold">988</span>--or,
+                if is an emergency, please call{" "}
+                <span className="font-bold">911</span>.
+              </span>
+            </div>
+            <span className="font-bold text-xl">
+              <X
+                size="32"
+                onClick={() => {
+                  setValue("true");
+                }}
+              ></X>
+            </span>
+          </div>
+        )}
         <NavMenu
           onBackToHome={() => setPage("home")}
           onToAbout={() => setPage("about")}
