@@ -22,7 +22,7 @@ function App() {
       <VideoBackground />
       <div className="relative z-1 flex flex-col h-dvh">
         {value !== "true" && (
-          <div className="flex flex-row p-3 items-center">
+          <div className="flex flex-row p-3 items-center justify-between">
             <div>
               <span>
                 Maybe You're Not Lost is not a crisis hotline. If you are in
