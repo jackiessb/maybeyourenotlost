@@ -20,17 +20,17 @@ terraform {
     }
   }
 
-  # Remote state is strongly recommended here: this module's state contains the
-  # Entra client secret in cleartext. See ../README.md and
-  # ../../bootstrap-subscription.sh, which provisions the state container.
-  #
-  # backend "azurerm" {
-  #   resource_group_name  = "rg-mynl-tfstate"
-  #   storage_account_name = "stmynltfstate"
-  #   container_name       = "tfstate"
-  #   key                  = "entra.tfstate"
-  #   use_azuread_auth     = true
-  # }
+  # State contains the Entra client secret in cleartext, hence remote state in a
+  # versioned, private container rather than on a laptop.
+  backend "azurerm" {
+    resource_group_name  = "rg-mynl-tfstate"
+    storage_account_name = "stmynltfstate"
+    container_name       = "tfstate"
+    key                  = "entra.tfstate"
+    use_azuread_auth     = true
+    tenant_id            = "e22c9007-0f6b-44b6-a403-af91c309278d"
+    subscription_id      = "c1a7d305-fc17-4bba-a6a9-bcb3cad99751"
+  }
 }
 
 # The Entra layer is administered in the tenant that owns the Microsoft 365

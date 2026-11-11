@@ -12,7 +12,7 @@ location = "eastus2"
 
 # Both are globally unique names -- change if taken.
 key_vault_name           = "kv-mynl-platform"
-token_store_account_name = "stmynldashauth"
+token_store_account_name = "stmynltokenstore"
 
 # Empty on the first apply. After `aspire deploy` creates the dashboard
 # Container App, fill in its system-assigned identity and re-apply:

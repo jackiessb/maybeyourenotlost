@@ -95,16 +95,25 @@ if ! az storage account show --name "$STATE_ACCOUNT" --resource-group "$STATE_RG
     --only-show-errors >/dev/null
 fi
 
-# Grant the current user data-plane access so the azurerm backend can use
-# use_azuread_auth instead of a storage key.
+# Grant data-plane access so the azurerm backend can use use_azuread_auth instead
+# of a storage key. Covers the current user plus anything in EXTRA_STATE_PRINCIPALS
+# (space-separated object IDs).
+#
+# EXTRA_STATE_PRINCIPALS exists because the entra module spans two tenants: it has
+# to run as an M365-tenant identity, which in this tenant is a B2B guest with a
+# different object ID and no access of its own. Once infrastructure and Entra live
+# in the same tenant, one identity covers everything and this is unnecessary.
 current_user="$(az ad signed-in-user show --query id -o tsv)"
 account_id="$(az storage account show --name "$STATE_ACCOUNT" --resource-group "$STATE_RG" --query id -o tsv)"
-az role assignment create \
-  --assignee-object-id "$current_user" \
-  --assignee-principal-type User \
-  --role "Storage Blob Data Contributor" \
-  --scope "$account_id" \
-  --only-show-errors >/dev/null 2>&1 || true
+
+for principal in $current_user ${EXTRA_STATE_PRINCIPALS:-}; do
+  az role assignment create \
+    --assignee-object-id "$principal" \
+    --assignee-principal-type User \
+    --role "Storage Blob Data Contributor" \
+    --scope "$account_id" \
+    --only-show-errors >/dev/null 2>&1 || true
+done
 
 az storage container create \
   --name "$STATE_CONTAINER" \
