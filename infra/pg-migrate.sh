@@ -10,6 +10,7 @@
 #   ./infra/pg-migrate.sh inspect    row counts and migration history on both servers
 #   ./infra/pg-migrate.sh dump       pg_dump both databases out of the OLD server
 #   ./infra/pg-migrate.sh restore    restore those dumps into the NEW server
+#   ./infra/pg-migrate.sh verify     compare row counts on both servers, side by side
 #   ./infra/pg-migrate.sh cleanup    revoke the Entra admins and firewall rules
 #
 # Run `prereqs` first. Without it every other phase fails on authentication, because
@@ -203,21 +204,70 @@ cmd_restore() {
   for db in "${DBS[@]}"; do
     [[ -f "$OUT/$db.dump" ]] || die "missing $OUT/$db.dump -- run '$0 dump' first"
     say "restoring $db into $NEW_SRV (as $role)"
+
+    local toc_arg=()
+    if [[ "$mode" == data-only ]]; then
+      # EF applied InitialCreate on the target when the API first started, so the
+      # target's __EFMigrationsHistory already holds the row the dump also carries,
+      # and COPY fails on its primary key. That row is identical bookkeeping, not
+      # data, so skip just that one table's COPY via a filtered TOC. Everything else
+      # restores normally and the error disappears rather than being tolerated.
+      #
+      # `inspect` is what justifies this: it only holds while both sides are on the
+      # same migration. If they ever diverge, use MODE=clean instead.
+      pg "$token" pg_restore -l "/out/$db.dump" > "$OUT/$db.toc"
+      grep -v 'TABLE DATA.*__EFMigrationsHistory' "$OUT/$db.toc" > "$OUT/$db.toc.use"
+      local skipped
+      skipped=$(( $(wc -l < "$OUT/$db.toc") - $(wc -l < "$OUT/$db.toc.use") ))
+      warn "excluded $skipped __EFMigrationsHistory TOC entry/entries"
+      toc_arg=(-L "/out/$db.toc.use")
+    fi
+
     # --no-owner/--no-privileges: role names differ between subscriptions.
-    # Not --exit-on-error: a data-only restore reports benign per-table noise, and
-    # the row counts below are the real signal.
+    # --exit-on-error is safe now the one expected conflict is excluded, so a real
+    # failure stops the run instead of scrolling past in a wall of output.
     pg "$token" pg_restore -h "$NEW_SRV.postgres.database.azure.com" \
-      -U "$role" -d "$db" --no-owner --no-privileges $flags -v "/out/$db.dump" \
-      2>&1 | grep -iE 'error|warning|already exists' | head -20 || true
+      -U "$role" -d "$db" --no-owner --no-privileges --exit-on-error \
+      $flags "${toc_arg[@]}" "/out/$db.dump"
+    warn "$db restored with no errors"
   done
 
-  say "verifying row counts landed"
+  cmd_verify
+}
+
+# Row counts from both servers side by side. This -- not pg_restore's exit code -- is
+# the real success criterion for the cutover, and it is worth re-running after the
+# final restore. Counts come from a live count(*) rather than pg_stat_user_tables,
+# whose n_live_tup is an estimate that lags until autovacuum catches up and so can
+# read as 0 on a freshly restored table.
+cmd_verify() {
+  local q="
+    select string_agg(t || '=' || c, ', ' order by t) from (
+      select relname as t,
+             (xpath('/row/c/text()',
+                    query_to_xml('select count(*) as c from ' || quote_ident(relname),
+                                 false, true, '')))[1]::text::bigint as c
+      from pg_stat_user_tables
+      where relname <> '__EFMigrationsHistory'
+    ) s;"
+
+  local old_role new_role old_token new_token
+  old_role=$(pg_role_for "$OLD_SUB" "$OLD_RG" "$OLD_SRV"); old_token=$(token_for "$OLD_SUB")
+  new_role=$(pg_role_for "$NEW_SUB" "$NEW_RG" "$NEW_SRV"); new_token=$(token_for "$NEW_SUB")
+
+  say "row counts, excluding __EFMigrationsHistory"
+  local o n
   for db in "${DBS[@]}"; do
-    printf '  %-14s ' "$db:"
-    pg "$token" psql -h "$NEW_SRV.postgres.database.azure.com" \
-      -U "$role" -d "$db" -At -c "
-        select coalesce(string_agg(relname || '=' || n_live_tup, ', ' order by relname), '(none)')
-        from pg_stat_user_tables;"
+    o=$(pg "$old_token" psql -h "$OLD_SRV.postgres.database.azure.com" \
+          -U "$old_role" -d "$db" -At -c "$q" | tr -d '\r')
+    n=$(pg "$new_token" psql -h "$NEW_SRV.postgres.database.azure.com" \
+          -U "$new_role" -d "$db" -At -c "$q" | tr -d '\r')
+    printf '\n  %s\n    old: %s\n    new: %s\n' "$db" "${o:-(none)}" "${n:-(none)}"
+    if [[ "$o" == "$n" ]]; then
+      printf '    \033[1;32m-> match\033[0m\n'
+    else
+      printf '    \033[1;31m-> MISMATCH\033[0m\n'
+    fi
   done
 }
 
@@ -257,6 +307,7 @@ case "${1:-}" in
   inspect) cmd_inspect ;;
   dump)    cmd_dump ;;
   restore) cmd_restore ;;
+  verify)  cmd_verify ;;
   cleanup) cmd_cleanup ;;
   *) sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
