@@ -25,6 +25,19 @@ var postgres = builder.AddAzurePostgresFlexibleServer("postgres")
             .Single();
 
         server.AvailabilityZone = "";
+
+        // Burstable is unavailable to this subscription as a whole, not just for one
+        // size: Standard_B1ms and Standard_B2s both fail to provision in eastus2 with
+        // `SkuNotAvailable`, while GeneralPurpose succeeds. The region's capability API
+        // is no help -- it reports every Burstable size as unrestricted. A fresh
+        // Pay-As-You-Go subscription commonly cannot provision Burstable until quota is
+        // granted, so this is the smallest current-generation GeneralPurpose SKU rather
+        // than a sizing decision. Revisit if Burstable quota is ever granted.
+        server.Sku = new PostgreSqlFlexibleServerSku
+        {
+            Name = "Standard_D2ds_v5",
+            Tier = PostgreSqlFlexibleServerSkuTier.GeneralPurpose,
+        };
     });
 
 var encouragementDb = postgres.AddDatabase("encouragement");
