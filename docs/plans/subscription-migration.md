@@ -1,17 +1,17 @@
 # Plan: Migrating to the Microsoft 365 Tenant's Subscription
 
-> **Status (2026-11-11).** Phases 1-3 complete. Phase 4 is most of the way up:
-> **Postgres is `Ready`** on GeneralPurpose `Standard_D2ds_v5` with both databases, and
-> `frontend` and `dashboard` are deployed. The SKU blocker is resolved and committed.
-> Two things remain: the `encouragement-api` and `contacts-api` image pushes timed out
-> and need a retry, and the dashboard's Easy Auth config needs the now-granted vault
-> role to take effect. **The next action is to re-run `aspire deploy`** (step 6). See
+> **Status (2026-11-11).** Phases 1-4 complete. The full stack is up and verified in
+> `Subscription 1` / `rg-prod`: Postgres `Ready` on GeneralPurpose `Standard_D2ds_v5`
+> with both APIs connected by managed identity and their schemas migrated, all four
+> container apps `Healthy`, and the dashboard enforcing Easy Auth against tenant
+> `aac88807…`. Nothing is bound to a custom domain yet, by design.
+>
+> **The next actions are the two remaining Phase 4 items** — the `pg_dump` / `pg_restore`
+> rehearsal (step 8) and, optionally, early sign-in validation (step 9) — and then
+> Phase 5's cutover. See
 > [Phase 4](#phase-4--deploy-the-application-stack-without-custom-domains). The live
 > site and dashboard are unaffected and still served entirely from the old
 > subscription.
->
-> **The new dashboard currently serves unauthenticated** — see step 5. Low exposure
-> while the APIs are absent and the database is empty, but it closes on the next deploy.
 >
 > **The working tree now holds only discardable edits** — the Postgres work is committed
 > (`09c5e8e`, `deb5ebf`), so the earlier "stage selectively or lose it" hazard is gone.
@@ -295,6 +295,12 @@ Phases 1-3 are done. Steps marked **⚠** must not be reordered — the note say
    so any other hostname fails with a redirect-URI mismatch. To test it early, add the
    new hostname as a second redirect URI in `infra/terraform/entra` and remove it in
    Phase 6.
+
+   Confirmed in practice: the deployed dashboard redirects to
+   `…/oauth2/v2.0/authorize?…&redirect_uri=https%3A%2F%2Fdashboard.proudcoast-d2445cec.eastus2.azurecontainerapps.io%2F.auth%2Flogin%2Faad%2Fcallback`,
+   which is not registered. Everything up to the redirect is verified working — the
+   tenant, client ID, secret resolution and token store are all correct — so what this
+   step would add is only the final leg of the exchange.
 10. Given that downtime is acceptable and rollback is a DNS flip, skipping this and
    testing after cutover is a reasonable trade. Decide deliberately rather than by
    default.
@@ -304,6 +310,20 @@ Phases 1-3 are done. Steps marked **⚠** must not be reordered — the note say
 11. Freeze writes: scale `encouragement-api` and `contacts-api` to zero replicas **in the
    old subscription**.
 12. Final `pg_dump` of `encouragement` and `contacts`; restore into the new server.
+
+    **⚠ The target databases are no longer empty.** Both APIs applied their EF Core
+    `InitialCreate` migrations on first start, so `encouragement` and `contacts` already
+    hold the full schema plus an `__EFMigrationsHistory` table. A plain `pg_restore` of
+    a schema-bearing dump into them will collide on every `CREATE TABLE`. Decide which
+    way to go and rehearse it at step 8:
+
+    - `pg_restore --clean --if-exists`, which drops each object before recreating it; or
+    - `--data-only` on the restore, relying on the migrated schema already matching; or
+    - drop and recreate the two databases immediately before restoring.
+
+    `--data-only` is the least destructive but assumes the schemas match exactly, which
+    holds only while both servers are on the same migration — worth confirming rather
+    than assuming, since the old server has been running longer.
 13. **⚠ Repoint the `love.` and `dash.` CNAMEs at the new environment's default domain,
     and only then bind the domains.** A custom subdomain cannot be bound until its CNAME
     already resolves to the target environment. Traffic moves here and the TLS window
@@ -563,12 +583,18 @@ running, so only its auth config is outstanding.
 - ~~Grant the dashboard identity `Key Vault Secrets User` on `kv-mynl`~~ **done** —
   principal `1ce367a2-e784-4c33-a5fd-02b044932ba8`,
   `container_app_grants_pending = false`
-- Deploy the two APIs — `frontend` and `dashboard` are up; `encouragement-api` and
-  `contacts-api` still need their image pushes retried
-- Re-run `aspire deploy` so the dashboard's Easy Auth config is created now that the
-  vault role exists. **The dashboard serves unauthenticated until this lands**
-- Verify the stack over the default `*.azurecontainerapps.io` hostnames —
-  `proudcoast-d2445cec.eastus2.azurecontainerapps.io`
+- ~~Deploy all four container apps~~ **done** — a fourth `aspire deploy` pushed the two
+  API images on the retry and all four apps report `Healthy`, with `frontend` on 2
+  replicas and the rest on 1
+- ~~Create the dashboard's Easy Auth config~~ **done** — the deploy after the vault
+  grant created it: platform enabled, `RedirectToLoginPage`, client
+  `774f2175…`, issuer `aac88807…`, token store enabled. The dashboard now 302s
+  browsers to `login.microsoftonline.com` and 401s everything else
+- ~~Verify the stack over the default `*.azurecontainerapps.io` hostnames~~ **done** on
+  `proudcoast-d2445cec.eastus2.azurecontainerapps.io` — frontend 200; both APIs
+  connected to Postgres by managed identity and applied their `InitialCreate`
+  migrations; `/encouragements` through the frontend proxy reaches
+  `encouragement-api` (405 on `GET`, which is the route resolving, not failing)
 - Optionally exercise dashboard sign-in before cutover — this needs a second redirect
   URI, so it is a deliberate opt-in rather than a free step. See
   [order of operations](#optional-validate-dashboard-sign-in-before-cutover)
