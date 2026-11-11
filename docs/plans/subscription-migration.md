@@ -169,11 +169,38 @@ Mechanics:
   does change — `Standard_B1ms`/Burstable to `Standard_D2ds_v5`/GeneralPurpose — but that
   is irrelevant to a logical dump and restore.
 - **Authentication**: the servers use Entra auth and the APIs connect by managed
-  identity, so there is no stored password to reuse. Either enable password
-  authentication temporarily (per [`environment.md`](../environment.md)) or authenticate
-  `pg_dump` with an Entra access token as the password.
+  identity, so there is no stored password to reuse. Authenticate `pg_dump` with an
+  Entra access token as the password (`az account get-access-token --resource
+  https://ossrdbms-aad.database.windows.net`), or enable password authentication
+  temporarily (per [`environment.md`](../environment.md)).
+
+  **⚠ A token alone is not enough — neither server has a human Entra admin.** Both list
+  only the APIs' managed identities, and `passwordAuth` is `Disabled` on both, so *no
+  user can connect at all* until one is added:
+
+  ```sh
+  az postgres flexible-server microsoft-entra-admin create -g <rg> -s <server> \
+    --object-id "$(az ad signed-in-user show --query id -o tsv)" \
+    --display-name "<upn>" --type User
+  ```
+
+  **And the two servers trust different tenants.** The old server accepts tokens only
+  from `e22c9007…` (`memjkt@gmail.com`), the new one only from `aac88807…`
+  (`jackson@maybeyourenotlost.com`), so each token has to be minted under the matching
+  `az account set` context and the admin granted separately on each side. Both logins
+  are already present in the CLI. Revoke both grants afterwards.
+
 - **Firewall**: the running machine's IP must be in the server's allowlist, on both
-  source and target.
+  source and target. Neither carried the current address; the live prod rules covered
+  two addresses from September plus `AllowAllAzureIps`.
+- **Client tooling**: no `pg_dump`/`psql` is installed on this machine. Run them from a
+  `postgres:16` container instead — Docker is available, and it guarantees a client
+  version matching both servers without installing anything.
+
+All of the above, plus the restore-mode choice below, is scripted in
+[`infra/pg-migrate.sh`](../../infra/pg-migrate.sh) (`prereqs`, `inspect`, `dump`,
+`restore`, `cleanup`), which is meant to be run once as a rehearsal and again for the
+real cutover.
 - **Connections**: the *source* `Standard_B1ms` caps at 50, so keep `pg_dump -j` modest.
   The GeneralPurpose target allows far more, so the restore side is not the constraint.
 - **Managed identity grants on the new server** are handled by `aspire deploy`, which
@@ -599,14 +626,19 @@ running, so only its auth config is outstanding.
   URI, so it is a deliberate opt-in rather than a free step. See
   [order of operations](#optional-validate-dashboard-sign-in-before-cutover)
 - Rehearsal `pg_dump` / `pg_restore` to size the real one and shake out auth and
-  firewall problems while nothing is frozen. Two prerequisites are already known:
-  **no `pg_dump`/`psql` is installed** on this machine (Docker is present, so
-  `postgres:16` in a container is the cleaner route and guarantees a version match),
-  and **this machine's IP is not in either server's firewall allowlist** — the live
-  prod rules cover two older addresses plus `AllowAllAzureIps`. Note also that the old
-  prod server has `passwordAuth` **disabled** and trusts tenant `e22c9007…` only, so
-  the dump must run under an `az` context in that tenant; both logins are already
-  present in the CLI
+  firewall problems while nothing is frozen. **Scripted in
+  [`infra/pg-migrate.sh`](../../infra/pg-migrate.sh)** — run `prereqs`, `inspect`,
+  `dump`, then `restore`, and `cleanup` when finished.
+
+  Groundwork already done: `postgres:16` pulled, and firewall rules for
+  `174.221.222.157` added to **both** servers. Still outstanding is the Entra admin
+  grant on each — see
+  [authentication](#postgres-data-and-the-write-window); without it no user can
+  connect, so the dump cannot start. `prereqs` does it.
+
+  `inspect` exists to answer one specific question before any restore: whether the two
+  servers are on the same EF migration. That decides whether `restore` can use
+  `--data-only` or needs `--clean --if-exists` — see step 14.
 - Optionally drop the CNAME TTLs from 300s to 60s to bound rollback time
 
 ### Phase 5 — Cutover
