@@ -340,17 +340,32 @@ Phases 1-3 are done. Steps marked **⚠** must not be reordered — the note say
 
     **⚠ The target databases are no longer empty.** Both APIs applied their EF Core
     `InitialCreate` migrations on first start, so `encouragement` and `contacts` already
-    hold the full schema plus an `__EFMigrationsHistory` table. A plain `pg_restore` of
-    a schema-bearing dump into them will collide on every `CREATE TABLE`. Decide which
-    way to go and rehearse it at step 8:
+    hold the full schema plus an `__EFMigrationsHistory` table.
 
-    - `pg_restore --clean --if-exists`, which drops each object before recreating it; or
-    - `--data-only` on the restore, relying on the migrated schema already matching; or
-    - drop and recreate the two databases immediately before restoring.
+    **Rehearsed, and settled: `--data-only`, minus `__EFMigrationsHistory`.** Both
+    servers are on the same single `InitialCreate` migration, so the target's schema
+    already matches and `--data-only` is the least destructive option. The one snag is
+    that the dump also carries the `__EFMigrationsHistory` row the target already has,
+    so its `COPY` fails on the primary key:
 
-    `--data-only` is the least destructive but assumes the schemas match exactly, which
-    holds only while both servers are on the same migration — worth confirming rather
-    than assuming, since the old server has been running longer.
+    > `duplicate key value violates unique constraint "PK___EFMigrationsHistory"`
+    > `Key ("MigrationId")=(20260817185224_InitialCreate) already exists`
+
+    That conflict is benign — identical bookkeeping, not data, and every other table
+    restores — but it is excluded rather than tolerated, by filtering that one entry
+    out of the `pg_restore` TOC. `restore` in
+    [`infra/pg-migrate.sh`](../../infra/pg-migrate.sh) does this and then runs with
+    `--exit-on-error`, so the restore is clean and any *real* failure stops it.
+
+    `MODE=clean` (`--clean --if-exists`) remains the fallback, and is the right answer
+    if the two servers ever diverge on migrations — which is what `inspect` checks and
+    should be re-checked at cutover rather than assumed, since the old server keeps
+    running until then.
+
+    **`pg_restore`'s exit code is not the success criterion** — run `verify`, which
+    compares row counts on both servers side by side. It counts with `count(*)` rather
+    than `pg_stat_user_tables.n_live_tup`, which is an estimate that lags autovacuum
+    and can read `0` on a freshly restored table.
 13. **⚠ Repoint the `love.` and `dash.` CNAMEs at the new environment's default domain,
     and only then bind the domains.** A custom subdomain cannot be bound until its CNAME
     already resolves to the target environment. Traffic moves here and the TLS window
@@ -625,20 +640,22 @@ running, so only its auth config is outstanding.
 - Optionally exercise dashboard sign-in before cutover — this needs a second redirect
   URI, so it is a deliberate opt-in rather than a free step. See
   [order of operations](#optional-validate-dashboard-sign-in-before-cutover)
-- Rehearsal `pg_dump` / `pg_restore` to size the real one and shake out auth and
-  firewall problems while nothing is frozen. **Scripted in
-  [`infra/pg-migrate.sh`](../../infra/pg-migrate.sh)** — run `prereqs`, `inspect`,
-  `dump`, then `restore`, and `cleanup` when finished.
+- ~~Rehearsal `pg_dump` / `pg_restore`~~ **done**, via
+  [`infra/pg-migrate.sh`](../../infra/pg-migrate.sh) (`prereqs`, `inspect`, `dump`,
+  `restore`, `verify`, `cleanup`). It shook out exactly what a rehearsal is for:
 
-  Groundwork already done: `postgres:16` pulled, and firewall rules for
-  `174.221.222.157` added to **both** servers. Still outstanding is the Entra admin
-  grant on each — see
-  [authentication](#postgres-data-and-the-write-window); without it no user can
-  connect, so the dump cannot start. `prereqs` does it.
+  - Neither server had a human Entra admin, so **no user could connect at all** — see
+    [authentication](#postgres-data-and-the-write-window). `prereqs` grants it.
+  - Neither server's firewall carried the current address.
+  - No local `pg_dump`/`psql`, so everything runs in a `postgres:16` container.
+  - The old tenant's account is a **B2B guest**, whose Postgres role name is the
+    mangled `..._gmail.com#EXT#@...onmicrosoft.com` form. The script reads the role
+    name back from the server rather than guessing it.
+  - A data-only restore collides on `__EFMigrationsHistory` and nothing else — benign,
+    and now excluded via a filtered TOC. See step 14.
 
-  `inspect` exists to answer one specific question before any restore: whether the two
-  servers are on the same EF migration. That decides whether `restore` can use
-  `--data-only` or needs `--clean --if-exists` — see step 14.
+  **Still to do before the real run:** `cleanup`, to revoke the two Entra admin grants
+  and the firewall rules. They are live on **production** until then.
 - Optionally drop the CNAME TTLs from 300s to 60s to bound rollback time
 
 ### Phase 5 — Cutover
