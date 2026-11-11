@@ -1,12 +1,17 @@
 # Plan: Migrating to the Microsoft 365 Tenant's Subscription
 
-> **Status (2026-11-11).** Phases 1-3 complete. Phase 4 is resuming: the Postgres SKU
-> blocker is **resolved, implemented and committed** — GeneralPurpose
-> `Standard_D2ds_v5`, verified by direct probe to provision in this subscription where
-> Burstable cannot. The next action is **`aspire deploy`** (step 4). See
+> **Status (2026-11-11).** Phases 1-3 complete. Phase 4 is most of the way up:
+> **Postgres is `Ready`** on GeneralPurpose `Standard_D2ds_v5` with both databases, and
+> `frontend` and `dashboard` are deployed. The SKU blocker is resolved and committed.
+> Two things remain: the `encouragement-api` and `contacts-api` image pushes timed out
+> and need a retry, and the dashboard's Easy Auth config needs the now-granted vault
+> role to take effect. **The next action is to re-run `aspire deploy`** (step 6). See
 > [Phase 4](#phase-4--deploy-the-application-stack-without-custom-domains). The live
 > site and dashboard are unaffected and still served entirely from the old
 > subscription.
+>
+> **The new dashboard currently serves unauthenticated** — see step 5. Low exposure
+> while the APIs are absent and the database is empty, but it closes on the next deploy.
 >
 > **The working tree now holds only discardable edits** — the Postgres work is committed
 > (`09c5e8e`, `deb5ebf`), so the earlier "stage selectively or lose it" hazard is gone.
@@ -130,7 +135,7 @@ so this is an `UPSERT` carrying both values, not a second record:
 ```
 
 The cutover itself is an `UPSERT` of the CNAMEs to the new environments' default
-domains. For Phase 5 that is **two** records, not three — `dev.` waits for step 19:
+domains. For Phase 5 that is **two** records, not three — `dev.` waits for step 21:
 
 | Record | Cutover target | Rollback target |
 | --- | --- | --- |
@@ -213,7 +218,7 @@ entirely.
 resource group from that environment secret, and azd creates what it does not find — so
 pointing the old subscription at `rg-prod` would not fail, it would quietly provision a
 second copy of production alongside the real one. The secret changes only when the deploy
-target changes (step 15).
+target changes (step 17).
 
 Note this also *swaps* what `rg-dev` means: today it holds production, afterwards it
 holds dev. Any saved query, bookmark, or alert scoped to `rg-dev` wants re-checking.
@@ -241,73 +246,111 @@ Phases 1-3 are done. Steps marked **⚠** must not be reordered — the note say
 4. `aspire deploy` into `Subscription 1` / `rg-prod`. Expect Postgres and the four
    container apps to be created. **⚠ Verify in Azure, not by exit code** — `aspire
    deploy` has already exited 0 with a failed Postgres deployment.
-5. Verify the stack over the default `*.azurecontainerapps.io` hostnames.
-6. Rehearse `pg_dump` / `pg_restore` while nothing is frozen, to size the real run and
+
+   **Partially done.** Postgres is `Ready` on `Standard_D2ds_v5` with both databases,
+   and `frontend` and `dashboard` exist. Two things still fail, both covered below:
+   the `encouragement-api` and `contacts-api` image pushes, and the dashboard's auth
+   config.
+
+5. **⚠ Grant the dashboard's system-assigned identity read access to `kv-mynl`, then
+   deploy again.** This cannot be done before step 4: the identity does not exist until
+   the Container App does, and `kv-mynl` is RBAC-only, so Easy Auth cannot resolve
+   either Key Vault reference without the role. Skipping it fails the deploy with
+   `AuthConfigSecretRefNotFound: Secret with name 'aad-client-secret' is not found in
+   configuration of container app 'dashboard'`, which reads like a missing secret rather
+   than a missing permission.
+
+   This is [`infra/terraform/README.md`](../../infra/terraform/README.md) step 4 and is
+   already described in `platform/main.tf`; it was simply missing from this sequence.
+
+   ```sh
+   az containerapp show -g rg-prod -n dashboard --query identity.principalId -o tsv
+   # put it in platform/terraform.tfvars as container_app_principal_ids, then apply
+   ```
+
+   **Done** for principal `1ce367a2-e784-4c33-a5fd-02b044932ba8` — it now holds
+   `Key Vault Secrets User` on `kv-mynl`, matching what the old subscription's dashboard
+   identity holds on `kv-mynl-platform`, and `container_app_grants_pending` is now
+   `false`. Note `*.tfvars` is gitignored, so that edit is deliberately local-only.
+
+   Until this lands **the dashboard serves unauthenticated** — no auth config at all and
+   `/.auth/me` 404s. Harmless while the APIs are absent, the database is empty and
+   `dash.` still points at the old environment, but it must not stay that way once data
+   arrives.
+
+6. Retry the two failed image pushes by re-running `aspire deploy`. The ACR push
+   timeouts (`net/http: timeout awaiting response headers`) are **transient, not
+   image-specific**: the first deploy lost `frontend` and `dashboard`, the second lost
+   `encouragement-api` and `contacts-api` — the exact inverse — and both of the latter
+   died on the same shared .NET base layer. Re-running picks up where it left off.
+7. Verify the stack over the default `*.azurecontainerapps.io` hostnames —
+   `proudcoast-d2445cec.eastus2.azurecontainerapps.io`.
+8. Rehearse `pg_dump` / `pg_restore` while nothing is frozen, to size the real run and
    shake out authentication and firewall problems.
 
 ### Optional: validate dashboard sign-in before cutover
 
-7. Sign-in cannot be exercised on the new environment's default hostname as-is: the only
+9. Sign-in cannot be exercised on the new environment's default hostname as-is: the only
    registered redirect URI is `https://dash.maybeyourenotlost.com/.auth/login/aad/callback`,
    so any other hostname fails with a redirect-URI mismatch. To test it early, add the
    new hostname as a second redirect URI in `infra/terraform/entra` and remove it in
    Phase 6.
-8. Given that downtime is acceptable and rollback is a DNS flip, skipping this and
+10. Given that downtime is acceptable and rollback is a DNS flip, skipping this and
    testing after cutover is a reasonable trade. Decide deliberately rather than by
    default.
 
 ### Phase 5 — cutover
 
-9. Freeze writes: scale `encouragement-api` and `contacts-api` to zero replicas **in the
+11. Freeze writes: scale `encouragement-api` and `contacts-api` to zero replicas **in the
    old subscription**.
-10. Final `pg_dump` of `encouragement` and `contacts`; restore into the new server.
-11. **⚠ Repoint the `love.` and `dash.` CNAMEs at the new environment's default domain,
+12. Final `pg_dump` of `encouragement` and `contacts`; restore into the new server.
+13. **⚠ Repoint the `love.` and `dash.` CNAMEs at the new environment's default domain,
     and only then bind the domains.** A custom subdomain cannot be bound until its CNAME
     already resolves to the target environment. Traffic moves here and the TLS window
     opens. Wait with `aws route53 wait resource-record-sets-changed --id <change-id>`.
 
-    **Leave `dev.` alone.** The dev environment is not rebuilt until step 19, so
+    **Leave `dev.` alone.** The dev environment is not rebuilt until step 21, so
     repointing `dev.` now would aim it at an environment that does not exist. It moves
     with the rebuild, off the critical path — which is the whole point of
     [decision 4](#decisions).
-12. Restore the two `ConfigureCustomDomain` call sites to their unconditional form,
+14. Restore the two `ConfigureCustomDomain` call sites to their unconditional form,
     discard the temporary flags, and set the real values in
     `appsettings.production.json`: the live hostnames, the **deterministic** certificate
     names (`love-cert` and `dash-cert` — not the old `mc-cae-yudlalf6hm-*` strings), and
-    the `kv-mynl` Key Vault URIs. `dev-cert` belongs to step 19, not here.
+    the `kv-mynl` Key Vault URIs. `dev-cert` belongs to step 21, not here.
 
-    **Commit this on the branch but do not merge it yet** — step 15 has to repoint CI
+    **Commit this on the branch but do not merge it yet** — step 17 has to repoint CI
     first, or a CI run would deploy this configuration to the old subscription.
-13. `aspire deploy` again. This binds the custom domains and issues the managed
+15. `aspire deploy` again. This binds the custom domains and issues the managed
     certificates, closing the TLS window.
-14. Smoke test: public site loads; dashboard sign-in completes with no `AADSTS` error and
+16. Smoke test: public site loads; dashboard sign-in completes with no `AADSTS` error and
     `/.auth/me` returns the user rather than 404ing; both APIs read and write.
 
 ### Phase 6 — decommission
 
-15. **⚠ Repoint CI before merging the cutover commit.** Set
+17. **⚠ Repoint CI before merging the cutover commit.** Set
     `manage_github_actions = true` with `github_environments` mapping `production` to
     `rg-prod` and `dev` to `rg-dev`, and `cicd_subscription_id` to the new subscription.
     Merging the cutover commit while CI still targets the old subscription would deploy
     the new configuration there.
-16. Merge to `main` so source control matches reality, and confirm a CI run lands in the
+18. Merge to `main` so source control matches reality, and confirm a CI run lands in the
     new subscription.
-17. Promote the client secret: drop `azurerm_key_vault_secret.client_secret` from the
+19. Promote the client secret: drop `azurerm_key_vault_secret.client_secret` from the
     `entra` module and make `client_secret_target` the only one, via `terraform state mv`
     rather than destroy-and-recreate. Remove the `azurerm.target` alias and the
     `target_key_vault_*` variables.
-18. Drop `secret_writer_principal_ids` and `EXTRA_STATE_PRINCIPALS` — both existed only
+20. Drop `secret_writer_principal_ids` and `EXTRA_STATE_PRINCIPALS` — both existed only
     while Entra and the infrastructure were in different tenants.
-19. Rebuild the dev environment in the new subscription (empty, no data migration), then
+21. Rebuild the dev environment in the new subscription (empty, no data migration), then
     repoint the `dev.` CNAME and set its hostname and certificate name in
     `appsettings.dev-b.json`. Decide its Postgres SKU here — see
     [decision 7](#decisions).
-20. **⚠ Only now delete the old subscription's resources**, and only after the new stack
+22. **⚠ Only now delete the old subscription's resources**, and only after the new stack
     has been verified under real use. Until this step the old environments are the
     rollback target: repointing the CNAMEs back is the entire recovery procedure.
-21. Remove the stale verification ID from the `asuid.*` TXT records, and raise the CNAME
+23. Remove the stale verification ID from the `asuid.*` TXT records, and raise the CNAME
     TTLs back to 300s if they were lowered.
-22. Delete the old app registration `f32123ed`, the legacy
+24. Delete the old app registration `f32123ed`, the legacy
     `tfstate/platform-legacy-oldsub.tfstate`, and the `stmynltfstate` state account.
 
 ## Phases
@@ -397,11 +440,10 @@ Phase 6 drops the original resource and promotes the target to be the only one.
 
 ### Phase 4 — Deploy the application stack, without custom domains
 
-**In progress.** `aspire deploy` has been run twice against `Subscription 1` /
-`rg-prod`. Infrastructure partially exists; no application is running yet. The blocker
-that stopped both runs is now **decided but not implemented** — see
-[the SKU decision](#phase-4--deploy-the-application-stack-without-custom-domains)
-below.
+**In progress, and most of the way there.** `aspire deploy` has been run three times
+against `Subscription 1` / `rg-prod`. The SKU blocker that stopped the first two is
+resolved and committed; the third run provisioned Postgres successfully and brought up
+two of the four container apps.
 
 Created and healthy (resource token `jcykdmvrxadbu`):
 
@@ -412,9 +454,15 @@ Created and healthy (resource token `jcykdmvrxadbu`):
 | `acrjcykdmvrxadbu` | Container registry |
 | `law-jcykdmvrxadbu` | Log Analytics workspace |
 | `mi-`, `encouragement_api_identity-`, `contacts_api_identity-` | Managed identities |
+| `postgres-jcykdmvrxadbu` | `Standard_D2ds_v5` GeneralPurpose, v16, zone 3, `Ready`, with the `encouragement` and `contacts` databases |
+| `frontend` | Container app, `Succeeded` |
+| `dashboard` | Container app, `Succeeded` and running — but **no auth config**, see below |
 
-**Blocker: Postgres `SkuNotAvailable`.** Both deploys failed provisioning
-`Standard_B1ms` / `Burstable` in `eastus2`:
+Still missing: the `encouragement-api` and `contacts-api` container apps, whose image
+pushes timed out, and the dashboard's Easy Auth configuration.
+
+**Former blocker, now resolved: Postgres `SkuNotAvailable`.** The first two deploys
+failed provisioning `Standard_B1ms` / `Burstable` in `eastus2`:
 
 > Specified SKU is not supported in this region. Please choose a different SKU.
 
@@ -466,7 +514,7 @@ Two consequences, both now settled by that probe:
   So a rebuilt dev environment with its own server needs GeneralPurpose too, taking the
   pair to **~$260/mo** for one environment that carries no production traffic. This
   makes the open question in [decision 7](#decisions) sharper rather than softer: decide
-  at step 19 whether dev needs its own server at all, or can share the production server
+  at step 21 whether dev needs its own server at all, or can share the production server
   with separate databases.
 
 One upside: the 50-connection ceiling on `Standard_B1ms` that the current replica limits
@@ -474,9 +522,26 @@ were sized around disappears — a 2-vCore GeneralPurpose server allows far more
 `MinReplicas` / `MaxReplicas` values in `AppHost.cs` were constrained partly by that cap
 and can be revisited once this lands.
 
-Also unresolved: the first deploy's **Docker pushes to the new ACR timed out**
-(`net/http: timeout awaiting response headers`) for both `frontend` and `dashboard`.
-Untested since, because the second deploy never got past Postgres. May be transient.
+**Docker pushes to the new ACR time out intermittently**
+(`net/http: timeout awaiting response headers`), and it is now clear this is transient
+rather than image-specific: the first deploy lost `frontend` and `dashboard`, the third
+lost `encouragement-api` and `contacts-api` — the exact inverse — with the two API
+failures both dying on the same shared .NET base layer. Re-running `aspire deploy`
+resumes without repeating the pushes that already succeeded, so the fix is simply to
+run it again until all four land.
+
+**The dashboard's Easy Auth needed a vault role that could not exist yet.** The third
+deploy failed `provision-dashboard-containerapp` with:
+
+> `AuthConfigSecretRefNotFound: Secret with name 'aad-client-secret' is not found in
+> configuration of container app 'dashboard'.`
+
+The message is misleading — the secret *is* present on the app, as a Key Vault reference
+to `kv-mynl` resolved through the app's system-assigned identity. What was missing is
+that identity's permission: `kv-mynl` is RBAC-only and the principal had no role, and it
+could not have been granted one earlier because the principal does not exist until the
+Container App does. That grant is step 5 and is now applied. The container app itself is
+running, so only its auth config is outstanding.
 
 **Done in this phase, with no user impact:**
 
@@ -491,9 +556,17 @@ Untested since, because the second deploy never got past Postgres. May be transi
 
 **Still to do in this phase:**
 
-- ~~Implement the GeneralPurpose SKU override~~ **done** (`deb5ebf`); still need a
-  server actually provisioned by `aspire deploy` rather than by probe
-- Get the container apps deployed (retry the ACR pushes)
+- ~~Implement the GeneralPurpose SKU override~~ **done** (`deb5ebf`)
+- ~~Get a Postgres server provisioned~~ **done** — `postgres-jcykdmvrxadbu`,
+  `Standard_D2ds_v5` / GeneralPurpose / zone 3, `Ready`, with the `encouragement` and
+  `contacts` databases created
+- ~~Grant the dashboard identity `Key Vault Secrets User` on `kv-mynl`~~ **done** —
+  principal `1ce367a2-e784-4c33-a5fd-02b044932ba8`,
+  `container_app_grants_pending = false`
+- Deploy the two APIs — `frontend` and `dashboard` are up; `encouragement-api` and
+  `contacts-api` still need their image pushes retried
+- Re-run `aspire deploy` so the dashboard's Easy Auth config is created now that the
+  vault role exists. **The dashboard serves unauthenticated until this lands**
 - Verify the stack over the default `*.azurecontainerapps.io` hostnames —
   `proudcoast-d2445cec.eastus2.azurecontainerapps.io`
 - Optionally exercise dashboard sign-in before cutover — this needs a second redirect
@@ -579,12 +652,34 @@ the investigation:
   environment.** So a new environment must be deployed without its domains, and bound
   afterwards. This is what forces Phase 4 to precede Phase 5 rather than merge with it.
 - **An "empty custom domain means skip binding" conditional driven from
-  `builder.Configuration["Parameters:customDomain"]` does not work.** It reads non-empty
-  during `aspire publish` even with `appsettings.production.json` set to `""`, and it is
-  neither user secrets nor a stale build — an unrelated code change in the same publish
-  took effect immediately. A compile-time `const bool` does work. The mechanism behind
-  Aspire's `Parameters:` resolution at publish time was not identified; this is an open
-  question, not a solved one.
+  `builder.Configuration["Parameters:customDomain"]` does not work**, and the reason is
+  now known: **`aspire deploy` caches every `Parameters:*` value in a per-environment
+  deployment state file** at `~/.aspire/deployments/<hash>/<environment>.json`, and that
+  cache takes precedence over `appsettings.<env>.json`. The conditional was reading a
+  stale `love.maybeyourenotlost.com` out of the cache, not the `""` in appsettings —
+  which is also why an unrelated *code* change in the same publish took effect
+  immediately: code is not cached, parameters are. A compile-time `const bool` works
+  because it sidesteps configuration entirely.
+- **That cache is a hazard in its own right during a migration.** It held the old
+  subscription's `kv-mynl-platform` Key Vault URIs and placeholder client/tenant GUIDs,
+  so a deploy that trusted it would have pointed the dashboard at a vault its managed
+  identity cannot read — the exact constraint this migration is ordered around. Inspect
+  it before any cross-subscription deploy, and `aspire deploy --clear-cache` to discard
+  it so the values come from `appsettings` again. Note `--clear-cache` also discards the
+  cached `Azure:SubscriptionId` / `Azure:ResourceGroup`, so that run prompts for the
+  target interactively; the run after it re-caches the corrected values.
+- **The dashboard's vault grant cannot precede its first deploy.** `kv-mynl` is
+  RBAC-only and the app's system-assigned principal does not exist until the Container
+  App does, so the `Key Vault Secrets User` role has to be granted between two deploys.
+  Skipping it fails the second one with `AuthConfigSecretRefNotFound: Secret with name
+  'aad-client-secret' is not found in configuration of container app 'dashboard'`, which
+  names the secret and not the permission — and the secret is genuinely present on the
+  app, so the message sends you to the wrong place.
+- **ACR push timeouts here are transient, not image-specific.** Two deploys each lost a
+  different pair of images to `net/http: timeout awaiting response headers` — the first
+  `frontend`/`dashboard`, the second `encouragement-api`/`contacts-api`. Re-running
+  `aspire deploy` resumes from where it stopped; the pushes that already succeeded are
+  not repeated.
 
 ## Uncommitted state
 
@@ -612,7 +707,7 @@ All that remains is the Phase 4 scaffolding:
 - The two `if (...)` blocks wrapping `app.ConfigureCustomDomain(...)`
 
 `HEAD` now contains the full Postgres configuration *and* two plain, unconditional
-`ConfigureCustomDomain` calls — so at step 12 `git checkout -- apphost/AppHost.cs` is the
+`ConfigureCustomDomain` calls — so at step 14 `git checkout -- apphost/AppHost.cs` is the
 whole restoration, and it is safe. There is no committed conditional form to return to:
 the config-driven conditional never worked (see
 [findings](#findings-worth-keeping)) and was never committed. Do **not** simply flip the
