@@ -1,5 +1,14 @@
 # Plan: Migrating to the Microsoft 365 Tenant's Subscription
 
+> **Status (2026-11-11).** Phases 1-3 complete. Phase 4 is **blocked on Postgres SKU
+> availability** in the target subscription — see
+> [Phase 4](#phase-4--deploy-the-application-stack-without-custom-domains). The live
+> site and dashboard are unaffected and still served entirely from the old
+> subscription.
+>
+> **Two uncommitted working-tree edits exist and must not be committed as-is** — see
+> [Uncommitted state](#uncommitted-state).
+
 ## Why and what's already done
 
 The goal is for all infrastructure to live under the tenant that owns the Microsoft 365
@@ -249,28 +258,67 @@ Phase 6 drops the original resource and promotes the target to be the only one.
 
 ### Phase 4 — Deploy the application stack, without custom domains
 
-`aspire deploy` into the new subscription with the custom domain and certificate
-parameters **left empty**. (Main already carried `dashboardCertificateName: ""`, so the
-empty shape is known to work; verify `ConfigureCustomDomain` tolerates it, and skip the
-call outright if it does not.)
+**In progress, blocked.** `aspire deploy` has been run twice against
+`Subscription 1` / `rg-prod`. Infrastructure partially exists; no application is running.
 
-This provisions the managed environment, both APIs, frontend, dashboard, Postgres, and
-the auth config. Verify the whole stack over the default
-`*.azurecontainerapps.io` hostnames.
+Created and healthy (resource token `jcykdmvrxadbu`):
 
-Then bind a **temporary hostname** — say `new.maybeyourenotlost.com` — get a managed
-certificate for it, and exercise everything end-to-end including dashboard sign-in. This
-is the step that de-risks the migration: it proves the new stack works before any
-user-visible change, leaving only the DNS flip itself untested.
+| Resource | |
+| --- | --- |
+| `cae-jcykdmvrxadbu` | Container Apps environment, `Succeeded` |
+| Default domain | `proudcoast-d2445cec.eastus2.azurecontainerapps.io` |
+| `acrjcykdmvrxadbu` | Container registry |
+| `law-jcykdmvrxadbu` | Log Analytics workspace |
+| `mi-`, `encouragement_api_identity-`, `contacts_api_identity-` | Managed identities |
 
-Also in this phase, with no user impact:
+**Blocker: Postgres `SkuNotAvailable`.** Both deploys failed provisioning
+`Standard_B1ms` / `Burstable` in `eastus2`:
 
-- Add the new subscription's `customDomainVerificationId` as an **additional** TXT value
-  on `asuid.love`, `asuid.dash`, and `asuid.dev`
-- Optionally drop the CNAME TTLs from 300s to 60s, to bound rollback time
-- Do a rehearsal `pg_dump`/`pg_restore` to size the real one and shake out auth and
+> Specified SKU is not supported in this region. Please choose a different SKU.
+
+This is subscription-specific, not regional — the *old* subscription runs exactly that
+SKU in exactly that region, and the region's capability API lists `Standard_B1ms` with
+no restriction. A fresh Pay-As-You-Go subscription commonly cannot provision Burstable
+until quota is granted.
+
+A first hypothesis — that Aspire's pinned `availabilityZone: '1'` was at fault, since
+zone numbers are logical per subscription and do not survive a move — was **wrong**. The
+pin was removed and the error is unchanged. The fix is still worth keeping on its own
+merits (see [findings](#findings-worth-keeping)), but it is not the cause.
+
+**Decision needed before this can proceed:**
+
+1. **Different tier.** `Standard_D2ds_v5` (GeneralPurpose) is the usual fallback and is
+   listed as available. Materially more expensive than B1ms — roughly an order of
+   magnitude — so this is a cost decision, not just a config change.
+2. **Different region.** Keeps the cheap SKU but moves the whole stack, since everything
+   else is in `eastus2`.
+3. **Request Burstable quota** for the subscription through support, and wait.
+
+Also unresolved: the first deploy's **Docker pushes to the new ACR timed out**
+(`net/http: timeout awaiting response headers`) for both `frontend` and `dashboard`.
+Untested since, because the second deploy never got past Postgres. May be transient.
+
+**Done in this phase, with no user impact:**
+
+- The new subscription's `customDomainVerificationId`
+  (`17CFD1AA78C587D0A8A7519A47FFE91C55404919C6A42985F803E9E0AAE8B00F`) is added as a
+  **second** TXT value on `asuid.love`, `asuid.dash`, and `asuid.dev`, alongside the old
+  one. Verified: two values live on each record, CNAMEs still resolving to the old
+  environment. Domain-ownership validation is now off the cutover's critical path.
+- Read it from the environment, which avoids a chicken-and-egg (no container app has to
+  exist first):
+  `az containerapp env show -n <cae> -g <rg> --query properties.customDomainConfiguration.customDomainVerificationId`
+
+**Still to do in this phase:**
+
+- Resolve the Postgres SKU decision above and get a server provisioned
+- Get the container apps deployed (retry the ACR pushes)
+- Verify the stack over the default `*.azurecontainerapps.io` hostnames
+- Bind a temporary hostname and exercise end-to-end, including dashboard sign-in
+- Rehearsal `pg_dump` / `pg_restore` to size the real one and shake out auth and
   firewall problems while nothing is frozen
-- Authenticate the AWS CLI (`aws login`) so the cutover is not waiting on it
+- Optionally drop the CNAME TTLs from 300s to 60s to bound rollback time
 
 ### Phase 5 — Cutover
 
@@ -301,6 +349,51 @@ Also in this phase, with no user impact:
   wanted.
 - Delete the old resource groups, then the old subscription.
 - Reconsider `WithAzdResourceNaming()` — see below.
+
+## Findings worth keeping
+
+Things learned the hard way during Phases 1-4, each of which cost time or misdirected
+the investigation:
+
+- **Aspire pins the Postgres availability zone to `'1'`.** Zone numbers are logical per
+  subscription — zone 1 in one subscription is not the same physical zone as in another,
+  and capacity differs — so a pinned zone does not survive a move between subscriptions.
+  Worth overriding to `''` (let Azure choose) regardless of whether it is the current
+  blocker. Done via `ConfigureInfrastructure` on the Postgres resource.
+- **`aspire deploy` exited 0 while the Postgres deployment failed.** The exit code is not
+  a reliable success signal. Verify with
+  `az deployment group list -g <rg> --query "[].{n:name,s:properties.provisioningState}"`.
+- **`SkuNotAvailable` does not mean the region lacks the SKU.** It is also returned for
+  subscription-level restrictions and zone capacity, while the region's capability API
+  cheerfully lists the SKU as available with `status: null`.
+- **`az keyvault check-name` is unreliable** — it reported a demonstrably-existing vault
+  name as available. Use `dig +short <name>.vault.azure.net` instead.
+- **Reading a vault while `az` points at the wrong tenant returns `AKV10032: Invalid
+  issuer`**, listing the tenants it will accept — not a permissions error.
+- **A custom subdomain cannot be bound until its CNAME already resolves to the target
+  environment.** So a new environment must be deployed without its domains, and bound
+  afterwards. This is what forces Phase 4 to precede Phase 5 rather than merge with it.
+- **An "empty custom domain means skip binding" conditional driven from
+  `builder.Configuration["Parameters:customDomain"]` does not work.** It reads non-empty
+  during `aspire publish` even with `appsettings.production.json` set to `""`, and it is
+  neither user secrets nor a stale build — an unrelated code change in the same publish
+  took effect immediately. A compile-time `const bool` does work. The mechanism behind
+  Aspire's `Parameters:` resolution at publish time was not identified; this is an open
+  question, not a solved one.
+
+## Uncommitted state
+
+Two working-tree edits are deliberate, local, and **must not be committed as they
+stand**. Both are backed up in the session scratchpad.
+
+| File | Local deviation | Why it must not ship |
+| --- | --- | --- |
+| `apphost/appsettings.production.json` | `customDomain`, `certificateName`, `dashboardCustomDomain`, `dashboardCertificateName` emptied; both Key Vault URIs point at `kv-mynl` | CI still deploys to the **old** subscription on push to `main`. Committing this would strip the custom domains off the live production apps. |
+| `apphost/AppHost.cs` | `const bool bindFrontendDomain = false;` and `bindDashboardDomain = false` | Same reason — a deploy to the old subscription would unbind `love.` and `dash.` |
+
+The Postgres availability-zone override in `AppHost.cs` is a genuine improvement and
+should be committed, but it shares a file with those temporary constants, so the
+constants have to be restored to their conditional form first.
 
 ## Decisions
 
