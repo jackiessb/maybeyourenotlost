@@ -1,20 +1,31 @@
 # Plan: Migrating to the Microsoft 365 Tenant's Subscription
 
-> **Status (2026-11-11). Phases 1-4 complete — ready for the Phase 5 cutover.** The
-> full stack is up and verified in `Subscription 1` / `rg-prod`: Postgres `Ready` on
-> GeneralPurpose `Standard_D2ds_v5` with both APIs connected by managed identity and
-> their schemas migrated, all four container apps `Healthy`, and the dashboard
-> enforcing Easy Auth against tenant `aac88807…`. Nothing is bound to a custom domain
-> yet, by design.
+> **Status (2026-11-11). Phases 1-5 complete — the cutover is done and live.**
+> `love.maybeyourenotlost.com` and `dash.maybeyourenotlost.com` are served from
+> `Subscription 1` / `rg-prod`, on valid `love-cert` / `dash-cert` managed
+> certificates. All four container apps are `Healthy` at their intended replica counts,
+> `Encouragements` 659 and `Contacts` 371 match between old and new servers with
+> identity sequences correct, and `dash.` redirects to Entra with the registered
+> redirect URI.
 >
-> The dump/restore is rehearsed end to end and repeatable, with `Encouragements` 659
-> and `Contacts` 371 matching on both servers; the rehearsal's grants and firewall
-> rules have been cleaned up. Early sign-in validation is **deliberately skipped** —
-> sign-in is tested after cutover.
+> | | |
+> | --- | --- |
+> | Writes frozen | 22:00:11Z |
+> | DNS flipped | 22:02:29Z |
+> | TLS window | ~22:02-22:15Z, dominated by certificate issuance (~8 min), not the deploy |
+> | Domains bound, window closed | 22:15:19Z |
 >
-> **The next action is step 11: the cutover.** It is the first user-visible step and the
-> first that is not freely reversible. The live site and dashboard are still served
-> entirely from the old subscription until then.
+> **Three things are outstanding, in priority order:**
+>
+> 1. **`./infra/pg-migrate.sh cleanup`** — the cutover's Entra admin grants and
+>    firewall rules are still live on **both** Postgres servers.
+> 2. **Rollback is degraded.** The old subscription's `encouragement-api` and
+>    `contacts-api` revisions are still deactivated from the write freeze, so
+>    repointing DNS back would serve a site with dead APIs until they are reactivated
+>    with `az containerapp revision activate`. Decide whether to reactivate them for a
+>    genuine rollback path or accept this, now that the new stack is verified.
+> 3. **Phase 6 begins at step 17: repoint CI *before* merging the cutover commit**
+>    (`c8c5e75`), which is committed on `MYNL-19` and deliberately unmerged.
 >
 > **The working tree now holds only discardable edits** — the Postgres work is committed
 > (`09c5e8e`, `deb5ebf`), so the earlier "stage selectively or lose it" hazard is gone.
@@ -100,6 +111,41 @@ the dev environment proves arbitrary names work — it uses a plain `dev-cert`.
 **Name the new certificates deterministically** (`love-cert`, `dash-cert`, `dev-cert`).
 This removes the `mc-cae-yudlalf6hm-*` strings from source control permanently and makes
 the parameters survive any future environment change.
+
+**⚠ But `aspire deploy` does not create the certificate — it only references one.**
+`ConfigureCustomDomain(domain, certificateName)` emits a binding to a managed
+certificate *of that name*, and fails if it does not already exist:
+
+> `CertificateNotFound: Certificate '…/managedCertificates/love-cert' doesn't exist.`
+
+Worse, the two sides depend on each other. A managed certificate cannot be issued until
+its hostname is already a custom hostname on an app in that environment:
+
+> `RequireCustomHostnameInEnvironment: Creating managed certificate requires hostname
+> 'love.maybeyourenotlost.com' added as a custom hostname to a container app or route`
+
+So neither `aspire deploy` nor `certificate create` can go first. **Break the cycle by
+adding the hostname unbound, then issuing the certificate, then deploying:**
+
+```sh
+# 1. hostname with no certificate (needs the CNAME to already resolve here)
+az containerapp hostname add -g rg-prod -n frontend  --hostname love.maybeyourenotlost.com
+az containerapp hostname add -g rg-prod -n dashboard --hostname dash.maybeyourenotlost.com
+
+# 2. managed certificates, named deterministically
+az containerapp env certificate create -g rg-prod -n cae-jcykdmvrxadbu \
+  --certificate-name love-cert --hostname love.maybeyourenotlost.com --validation-method CNAME
+az containerapp env certificate create -g rg-prod -n cae-jcykdmvrxadbu \
+  --certificate-name dash-cert --hostname dash.maybeyourenotlost.com --validation-method CNAME
+
+# 3. wait for both to leave Pending, then aspire deploy binds them
+az containerapp env certificate list -g rg-prod -n cae-jcykdmvrxadbu \
+  --query "[].{name:name,state:properties.provisioningState}" -o table
+```
+
+Issuance took about 8 minutes for the pair, and it is the dominant term in the TLS
+window — not the deploy. `az containerapp hostname bind` would do steps 1-2 in one go
+but auto-generates the `mc-cae-*` name this section exists to avoid.
 
 ### Closing the window
 
@@ -422,8 +468,12 @@ and removing. Steps 9 and 10 are retained below for the reasoning.
 
     **Commit this on the branch but do not merge it yet** — step 17 has to repoint CI
     first, or a CI run would deploy this configuration to the old subscription.
-15. `aspire deploy` again. This binds the custom domains and issues the managed
-    certificates, closing the TLS window.
+15. **⚠ Create the managed certificates before deploying — `aspire deploy` does not.**
+    Add each hostname unbound, issue `love-cert` and `dash-cert`, wait for both to leave
+    `Pending`, and only then `aspire deploy` to bind them and close the TLS window. The
+    commands and the reason the three steps cannot be reordered are in
+    [certificate names](#certificate-names-are-free-form). Deploying first fails with
+    `CertificateNotFound`; issuing first fails with `RequireCustomHostnameInEnvironment`.
 16. Smoke test: public site loads; dashboard sign-in completes with no `AADSTS` error and
     `/.auth/me` returns the user rather than 404ing; both APIs read and write.
 
@@ -781,6 +831,18 @@ the investigation:
 - **A custom subdomain cannot be bound until its CNAME already resolves to the target
   environment.** So a new environment must be deployed without its domains, and bound
   afterwards. This is what forces Phase 4 to precede Phase 5 rather than merge with it.
+- **A managed certificate and its hostname binding each require the other to exist
+  first.** `aspire deploy` only *references* a certificate by name and fails with
+  `CertificateNotFound`; `az containerapp env certificate create` refuses with
+  `RequireCustomHostnameInEnvironment` until the hostname is already on an app. The way
+  through is `az containerapp hostname add` (hostname, no certificate), then issue the
+  certificate, then deploy — see
+  [certificate names](#certificate-names-are-free-form). Found the hard way, during the
+  cutover, with the TLS window already open.
+- **Certificate issuance, not the deploy, is what the TLS window is made of.** The pair
+  took about 8 minutes of a ~13-minute window; the deploy either side of it took about a
+  minute. Pre-creating the certificates is therefore the single biggest lever on
+  downtime for any future environment move.
 - **An "empty custom domain means skip binding" conditional driven from
   `builder.Configuration["Parameters:customDomain"]` does not work**, and the reason is
   now known: **`aspire deploy` caches every `Parameters:*` value in a per-environment
