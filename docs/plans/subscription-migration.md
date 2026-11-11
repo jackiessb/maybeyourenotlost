@@ -362,10 +362,24 @@ Phases 1-3 are done. Steps marked **⚠** must not be reordered — the note say
     should be re-checked at cutover rather than assumed, since the old server keeps
     running until then.
 
+    **A data-only restore is not idempotent on its own**, which matters because the
+    rehearsal has already left a copy of production data in these tables. It assumes
+    empty targets, so a second run fails on `PK_Encouragements` instead of the
+    migrations table. `restore` therefore `TRUNCATE`s the target's tables (CASCADE, so
+    foreign-key order does not matter) before reloading, making it safe to run as many
+    times as needed.
+
     **`pg_restore`'s exit code is not the success criterion** — run `verify`, which
     compares row counts on both servers side by side. It counts with `count(*)` rather
     than `pg_stat_user_tables.n_live_tup`, which is an estimate that lags autovacuum
     and can read `0` on a freshly restored table.
+
+    `verify` also checks the **identity sequences**, which is the subtle one. The
+    restored rows carry explicit `Id` values and `TRUNCATE` does not reset the owning
+    sequence — `pg_dump`'s `setval` entries are what put it right. A sequence left
+    behind `max(Id)` leaves the table looking perfect and then fails the *first write
+    after cutover*. Both currently check out
+    (`Encouragements` 659/659, `Contacts` 371/371).
 13. **⚠ Repoint the `love.` and `dash.` CNAMEs at the new environment's default domain,
     and only then bind the domains.** A custom subdomain cannot be bound until its CNAME
     already resolves to the target environment. Traffic moves here and the TLS window
@@ -653,6 +667,18 @@ running, so only its auth config is outstanding.
     name back from the server rather than guessing it.
   - A data-only restore collides on `__EFMigrationsHistory` and nothing else — benign,
     and now excluded via a filtered TOC. See step 14.
+  - A data-only restore is also not repeatable without clearing the target first, so
+    `restore` now truncates before reloading.
+
+  **Verified end to end**: `Encouragements` 659 and `Contacts` 371 rows on both
+  servers, identity sequences correct, and a repeat restore running clean under
+  `--exit-on-error`. The sizes are small enough that the write freeze in Phase 5 will
+  be brief.
+
+  Note the new databases now hold a copy of production data from the rehearsal. That
+  is harmless — nothing serves traffic from them, and the cutover's restore truncates
+  first — but it is why `verify` matching is not by itself proof the *final* restore
+  ran; re-run it after the real one.
 
   **Still to do before the real run:** `cleanup`, to revoke the two Entra admin grants
   and the firewall rules. They are live on **production** until then.
