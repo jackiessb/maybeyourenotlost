@@ -177,7 +177,89 @@ Still worth doing a **rehearsal dump and restore** in Phase 4 while everything i
 live, to size the real one and shake out authentication and firewall problems before
 anything is frozen.
 
+## Order of operations
+
+The authoritative sequence from the current state to a decommissioned old subscription.
+Phases 1-3 are done. Steps marked **⚠** must not be reordered — the note says what breaks.
+
+### Resume Phase 4
+
+1. Add the GeneralPurpose `Sku` override to the Postgres `ConfigureInfrastructure`
+   callback in `AppHost.cs`, next to the existing `AvailabilityZone` override.
+2. **⚠ Commit the Postgres changes on their own, before discarding anything else in
+   `AppHost.cs`.** Stage selectively — that file also carries the temporary
+   `const bool bind*Domain = false` flags, which must not ship. The Postgres override
+   exists *only* in the working tree, so a careless `git checkout` on this file destroys
+   it. See [Uncommitted state](#uncommitted-state).
+3. Leave the temporary flags and the emptied `appsettings.production.json` in place —
+   both are still needed for the next step.
+4. `aspire deploy` into `Subscription 1` / `rg-prod`. Expect Postgres and the four
+   container apps to be created. **⚠ Verify in Azure, not by exit code** — `aspire
+   deploy` has already exited 0 with a failed Postgres deployment.
+5. Verify the stack over the default `*.azurecontainerapps.io` hostnames.
+6. Rehearse `pg_dump` / `pg_restore` while nothing is frozen, to size the real run and
+   shake out authentication and firewall problems.
+
+### Optional: validate dashboard sign-in before cutover
+
+7. Sign-in cannot be exercised on the new environment's default hostname as-is: the only
+   registered redirect URI is `https://dash.maybeyourenotlost.com/.auth/login/aad/callback`,
+   so any other hostname fails with a redirect-URI mismatch. To test it early, add the
+   new hostname as a second redirect URI in `infra/terraform/entra` and remove it in
+   Phase 6.
+8. Given that downtime is acceptable and rollback is a DNS flip, skipping this and
+   testing after cutover is a reasonable trade. Decide deliberately rather than by
+   default.
+
+### Phase 5 — cutover
+
+9. Freeze writes: scale `encouragement-api` and `contacts-api` to zero replicas **in the
+   old subscription**.
+10. Final `pg_dump` of `encouragement` and `contacts`; restore into the new server.
+11. **⚠ Repoint the `love.`, `dash.` and `dev.` CNAMEs at the new environments' default
+    domains, and only then bind the domains.** A custom subdomain cannot be bound until
+    its CNAME already resolves to the target environment. Traffic moves here and the TLS
+    window opens. Wait with
+    `aws route53 wait resource-record-sets-changed --id <change-id>`.
+12. Restore the two `ConfigureCustomDomain` call sites to their unconditional form,
+    discard the temporary flags, and set the real values in
+    `appsettings.production.json`: the live hostnames, the **deterministic** certificate
+    names (`love-cert`, `dash-cert`, `dev-cert` — not the old
+    `mc-cae-yudlalf6hm-*` strings), and the `kv-mynl` Key Vault URIs.
+13. `aspire deploy` again. This binds the custom domains and issues the managed
+    certificates, closing the TLS window.
+14. Smoke test: public site loads; dashboard sign-in completes with no `AADSTS` error and
+    `/.auth/me` returns the user rather than 404ing; both APIs read and write.
+
+### Phase 6 — decommission
+
+15. **⚠ Repoint CI before merging the cutover commit.** Set
+    `manage_github_actions = true` with `github_environments` mapping `production` to
+    `rg-prod` and `dev` to `rg-dev`, and `cicd_subscription_id` to the new subscription.
+    Merging the cutover commit while CI still targets the old subscription would deploy
+    the new configuration there.
+16. Merge to `main` so source control matches reality, and confirm a CI run lands in the
+    new subscription.
+17. Promote the client secret: drop `azurerm_key_vault_secret.client_secret` from the
+    `entra` module and make `client_secret_target` the only one, via `terraform state mv`
+    rather than destroy-and-recreate. Remove the `azurerm.target` alias and the
+    `target_key_vault_*` variables.
+18. Drop `secret_writer_principal_ids` and `EXTRA_STATE_PRINCIPALS` — both existed only
+    while Entra and the infrastructure were in different tenants.
+19. Rebuild the dev environment in the new subscription (empty, no data migration).
+20. **⚠ Only now delete the old subscription's resources**, and only after the new stack
+    has been verified under real use. Until this step the old environments are the
+    rollback target: repointing the CNAMEs back is the entire recovery procedure.
+21. Remove the stale verification ID from the `asuid.*` TXT records, and raise the CNAME
+    TTLs back to 300s if they were lowered.
+22. Delete the old app registration `f32123ed`, the legacy
+    `tfstate/platform-legacy-oldsub.tfstate`, and the `stmynltfstate` state account.
+
 ## Phases
+
+**[Order of operations](#order-of-operations) is the authoritative sequence.** The
+sections below carry status, rationale, and the detail behind each phase — not a second
+ordering. If the two ever disagree, the order of operations is correct.
 
 Phases 1–4 are fully reversible and invisible to users: they build the new stack
 alongside the old one and change nothing about what serves traffic. Phase 5 is the
@@ -346,33 +428,38 @@ Untested since, because the second deploy never got past Postgres. May be transi
 
 ### Phase 5 — Cutover
 
-1. Freeze writes — scale both APIs to zero replicas
-2. Final `pg_dump` of `encouragement` and `contacts`; restore into the new server
-3. Repoint the `love.`, `dash.`, and `dev.` CNAMEs at the new environments' default
-   domains, then `aws route53 wait resource-record-sets-changed`
-4. Add the custom domains to the new apps and request managed certificates. This is the
-   TLS window: traffic has moved but no certificate exists for the hostname yet
-5. Set the real domain and deterministic certificate names in
-   `appsettings.production.json` / `appsettings.dev-b.json` and redeploy — this also
-   restores the replica counts frozen in step 1
-6. Smoke test: public site loads; dashboard sign-in completes with no `AADSTS` error and
-   `/.auth/me` returns the user; both APIs read and write
+The only user-visible step, and the only one that is not freely reversible. See
+[order of operations](#phase-5--cutover) for the sequence.
+
+Two things make it awkward, and both are inherent rather than accidental:
+
+- **A custom subdomain cannot be bound until its CNAME already resolves to the target
+  environment.** So traffic has to move *before* the certificate can exist, which opens a
+  TLS window for however long managed-certificate issuance takes. Accepted deliberately,
+  since downtime during the migration is fine.
+- **The dump and restore are not atomic with the DNS change.** Hence the write freeze:
+  scaling both APIs to zero is honest downtime rather than silently losing a submission
+  that lands in the gap.
+
+The redeploy at the end also restores the replica counts, since `MinReplicas` /
+`MaxReplicas` live in `AppHost.cs` — the freeze undoes itself, but it will not survive a
+deploy either.
 
 ### Phase 6 — Decommission
 
-- Repoint CI: `manage_github_actions = true` in the entra module, which rewrites the
-  `AZURE_*` environment secrets and creates the federated credentials. The old
-  `azd pipeline config` identity in `e22c9007…` can then go.
-- Delete the old app registration `f32123ed`, if still present.
-- Remove the stale TXT values from `asuid.*`.
-- Raise the CNAME TTLs back to 300s if they were lowered.
-- `terraform destroy` the `default` workspace of `platform` to remove the old vault and
-  token store, then promote `client_secret_target` to be the only secret resource in
-  `entra` (via `terraform state mv`, not destroy-and-recreate).
-- Delete the old `stmynltfstate` state account once its versioned backups are no longer
-  wanted.
-- Delete the old resource groups, then the old subscription.
-- Reconsider `WithAzdResourceNaming()` — see below.
+Deliberately last, because **the old environments are the rollback target** right up
+until they are deleted. Repointing the CNAMEs back is the entire recovery procedure, and
+it only works while the old stack still exists and still holds valid certificates. See
+[order of operations](#phase-6--decommission) for the sequence.
+
+On removing the old platform resources: they were **orphaned from Terraform state** in
+Phase 2, not left under management, so there is no workspace to destroy. Either
+`az group delete` the old `rg-mynl-platform` directly, or restore
+`tfstate/platform-legacy-oldsub.tfstate` and `terraform destroy` with the old variable
+values. Deleting the old subscription outright makes both moot.
+
+`WithAzdResourceNaming()` is also revisited here rather than earlier — see
+[decision 5](#decisions).
 
 ## Findings worth keeping
 
