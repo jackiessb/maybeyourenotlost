@@ -1,7 +1,8 @@
 # Plan: Migrating to the Microsoft 365 Tenant's Subscription
 
-> **Status (2026-11-11).** Phases 1-3 complete. Phase 4 is **blocked on Postgres SKU
-> availability** in the target subscription — see
+> **Status (2026-11-11).** Phases 1-3 complete. Phase 4 is partially up and resuming:
+> the Postgres SKU blocker is **decided — move to GeneralPurpose** — and the change is
+> not yet implemented. See
 > [Phase 4](#phase-4--deploy-the-application-stack-without-custom-domains). The live
 > site and dashboard are unaffected and still served entirely from the old
 > subscription.
@@ -286,14 +287,37 @@ zone numbers are logical per subscription and do not survive a move — was **wr
 pin was removed and the error is unchanged. The fix is still worth keeping on its own
 merits (see [findings](#findings-worth-keeping)), but it is not the cause.
 
-**Decision needed before this can proceed:**
+**Resolved: move to GeneralPurpose.** `Standard_D2ds_v5` / `GeneralPurpose` — the
+smallest current-generation GeneralPurpose SKU, listed as available in `eastus2` for this
+subscription. Chosen over the alternatives (a different region, which would move the
+whole stack for a cheaper SKU; or requesting Burstable quota through support and
+waiting).
 
-1. **Different tier.** `Standard_D2ds_v5` (GeneralPurpose) is the usual fallback and is
-   listed as available. Materially more expensive than B1ms — roughly an order of
-   magnitude — so this is a cost decision, not just a config change.
-2. **Different region.** Keeps the cheap SKU but moves the whole stack, since everything
-   else is in `eastus2`.
-3. **Request Burstable quota** for the subscription through support, and wait.
+Not yet implemented. The change goes alongside the availability-zone override already in
+`AppHost.cs`, on the same `ConfigureInfrastructure` callback:
+
+```csharp
+server.Sku = new PostgreSqlFlexibleServerSku
+{
+    Name = "Standard_D2ds_v5",
+    Tier = PostgreSqlFlexibleServerSkuTier.GeneralPurpose,
+};
+```
+
+Two consequences worth deciding on separately:
+
+- **Cost.** GeneralPurpose is substantially more expensive than `Standard_B1ms` —
+  materially so at this project's scale. Check current pricing before committing; do not
+  rely on a figure quoted here.
+- **The dev environment.** If Burstable is unavailable subscription-wide rather than just
+  for this server, the rebuilt dev environment needs GeneralPurpose too, doubling that
+  cost for an environment with no production traffic. Worth testing Burstable in dev
+  explicitly, and considering whether dev needs its own server at all.
+
+One upside: the 50-connection ceiling on `Standard_B1ms` that the current replica limits
+were sized around disappears — a 2-vCore GeneralPurpose server allows far more. The
+`MinReplicas` / `MaxReplicas` values in `AppHost.cs` were constrained partly by that cap
+and can be revisited once this lands.
 
 Also unresolved: the first deploy's **Docker pushes to the new ACR timed out**
 (`net/http: timeout awaiting response headers`) for both `frontend` and `dashboard`.
@@ -312,7 +336,7 @@ Untested since, because the second deploy never got past Postgres. May be transi
 
 **Still to do in this phase:**
 
-- Resolve the Postgres SKU decision above and get a server provisioned
+- Implement the GeneralPurpose SKU override and get a server provisioned
 - Get the container apps deployed (retry the ACR pushes)
 - Verify the stack over the default `*.azurecontainerapps.io` hostnames
 - Bind a temporary hostname and exercise end-to-end, including dashboard sign-in
@@ -411,6 +435,10 @@ constants have to be restored to their conditional form first.
    once the old subscription is gone.
 6. ~~Resource group naming~~ **Corrected to `rg-prod` / `rg-dev` during the migration** —
    see [resource group naming](#resource-group-naming).
+7. ~~Postgres SKU, after Burstable proved unavailable in the target subscription~~
+   **GeneralPurpose `Standard_D2ds_v5`.** See
+   [Phase 4](#phase-4--deploy-the-application-stack-without-custom-domains); the dev
+   environment's SKU and the revisited replica limits remain open sub-questions.
 
 ## Rollback
 
