@@ -501,13 +501,15 @@ resolve secrets before the vault holds them. Only phases 1 and 3 recur.
       `rg-mynl-tfstate/stmynltfstate`, versioning on
 - [ ] Plan the Postgres data migration and the DNS/certificate cutover for the
       subscription move
-- [ ] Delete the dead repository-level `AZURE_*` variables left by
-      `azd pipeline config` (the live values are environment secrets; see
-      `infra/terraform/README.md`)
+- [x] Delete the dead repository-level `AZURE_*` variables left by
+      `azd pipeline config` — removed `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`,
+      `AZURE_SUBSCRIPTION_ID`, `AZURE_ENV_NAME`; kept `AZURE_LOCATION`, which the
+      workflows do read, and left the environment secrets untouched
 - [x] ~~Do not deploy production until Terraform has run~~ — both modules applied,
       parameters populated, deployed and verified in production
-- [ ] Decommission the hand-made `stmynldashauth` storage account in `rg-dev`, now
-      superseded by the Terraform-owned `stmynltokenstore`
+- [x] Decommission the hand-made `stmynldashauth` storage account in `rg-dev` —
+      deleted after confirming zero references across all seven container apps and
+      the auth config; the subscription now holds only Terraform-owned storage
 - [ ] Delete the old app registration `f32123ed` in the Default Directory tenant —
       **keep it until confidence in the new one has settled**, since it is the
       rollback path
