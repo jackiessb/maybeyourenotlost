@@ -131,3 +131,34 @@ variable "cicd_subscription_id" {
   type        = string
   default     = ""
 }
+
+# ---------------------------------------------------------------------------
+# Migration: a second vault receiving the same client secret
+# ---------------------------------------------------------------------------
+
+variable "target_key_vault_id" {
+  description = <<-DESC
+    Resource ID of a second Key Vault to receive the client secret, so it exists in
+    both the old and new subscription across the cutover. Empty disables it.
+
+    This is additive rather than a repoint of key_vault_id on purpose. That field is
+    ForceNew, so editing it would delete the secret from the vault the running
+    dashboard still reads -- and worse, Terraform could not even plan the change,
+    because refreshing the existing secret requires a token for the old vault's tenant
+    that a repointed provider cannot obtain.
+  DESC
+  type        = string
+  default     = ""
+}
+
+variable "target_key_vault_tenant_id" {
+  description = "Tenant of the subscription hosting target_key_vault_id. Defaults to the primary's."
+  type        = string
+  default     = ""
+}
+
+variable "target_key_vault_subscription_id" {
+  description = "Subscription hosting target_key_vault_id. Defaults to the primary's."
+  type        = string
+  default     = ""
+}

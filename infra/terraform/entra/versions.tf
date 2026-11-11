@@ -52,6 +52,21 @@ provider "azurerm" {
   subscription_id = var.key_vault_subscription_id
 }
 
+# Second vault, during the subscription migration. The primary provider stays pinned to
+# whichever tenant currently holds the secret, because Terraform has to refresh the
+# existing resource there -- repointing the primary would fail on a cross-tenant token
+# before it could even plan. Falls back to mirroring the primary when the migration
+# variables are unset, so the alias is always validly configured even though nothing
+# uses it.
+provider "azurerm" {
+  alias = "target"
+
+  features {}
+
+  tenant_id       = var.target_key_vault_tenant_id != "" ? var.target_key_vault_tenant_id : var.key_vault_tenant_id
+  subscription_id = var.target_key_vault_subscription_id != "" ? var.target_key_vault_subscription_id : var.key_vault_subscription_id
+}
+
 # Only used when var.manage_github_actions is true. Authenticates with the
 # GITHUB_TOKEN environment variable (needs the `repo` scope).
 provider "github" {

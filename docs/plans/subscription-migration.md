@@ -196,100 +196,56 @@ remain in `stmynltfstate` as versioned backups until Phase 6.
 
 ### Phase 2 — Platform layer in the target
 
-> **Do not simply repoint the existing tfvars and apply.** The `platform` state tracks
-> `kv-mynl-platform` and the token store *in the old subscription*, and the live
-> dashboard reads its secrets from that vault. Changing `subscription_id` in place makes
-> Terraform either plan to destroy those resources — breaking sign-in — or silently keep
-> managing the old ones and never create the new. The two deployments must have
-> **separate state**.
+**Done.** `rg-mynl-platform` / `kv-mynl` / `stmynltokens` now exist in `Subscription 1`,
+with the token store container and SAS secret. 7 added, 0 changed, 0 destroyed.
 
-Use a Terraform workspace so both coexist until Phase 6:
+The old deployment is **orphaned, not destroyed**: its resources keep running and keep
+the live dashboard serving until the DNS cutover, and they die with the old subscription
+in Phase 6. That turned out simpler than the Terraform workspace this plan originally
+called for — no permanent `-var-file` discipline, and one clean state going forward.
+
+How: the existing state blob was archived to `tfstate/platform-legacy-oldsub.tfstate`,
+the original deleted, and `terraform init -reconfigure` started a fresh empty state at
+`platform.tfstate`. Three copies of the old state exist (that archive, the pre-migration
+blob still in `stmynltfstate`, and a local backup), so `terraform destroy` of the old
+resources remains possible by restoring one.
+
+Names had to differ from the old deployment's, since both are globally unique and still
+in use. **`az keyvault check-name` is not trustworthy** — it reported
+`kv-mynl-platform` as available while that vault demonstrably exists. Verify with DNS
+instead:
 
 ```sh
-cd infra/terraform/platform
-git mv terraform.tfvars old.tfvars        # stop auto-loading; always be explicit
-terraform workspace new target
-terraform apply -var-file=target.tfvars   # new tenant + subscription
+dig +short kv-mynl.vault.azure.net    # resolves => name taken
 ```
 
-`target.tfvars` carries `tenant_id = aac88807…` and
-`subscription_id = 20aad6af…`, and omits `secret_writer_principal_ids` — that grant
-exists only because Entra and the infrastructure were in different tenants. Once both
-are in `aac88807…` one identity covers everything, and the MFA and guest-object friction
-from the first apply disappears. `EXTRA_STATE_PRINCIPALS` likewise becomes unnecessary.
-
-Renaming `terraform.tfvars` matters: it is auto-loaded in *every* workspace, so leaving
-it in place would silently merge old-subscription values into the target apply. With it
-renamed, forgetting `-var-file` is an immediate error about missing required variables
-rather than a wrong-target apply. Both files are gitignored by the existing `*.tfvars`
-rule.
-
-The `default` workspace keeps managing the old deployment, which stays the rollback
-target and is torn down with `terraform destroy` in Phase 6.
+`secret_writer_principal_ids` is empty here and should stay that way. It existed only
+because Entra and the infrastructure were in different tenants; in this subscription
+both are `aac88807…`, so the identity running Terraform already has what it needs.
 
 ### Phase 3 — Write the client secret into the new vault
 
-**The app registration itself does not change** — no new client ID, no re-assignment of
-users, the redirect URI is unchanged. Only the secret's destination moves.
+**Done.** The client secret now exists in **both** vaults. 1 added, 0 changed, 0
+destroyed. The app registration did not change — same client ID `774f2175…`, same
+assignments, same redirect URI. Only the secret's storage was extended.
 
-> **The same destroy trap applies here.** `key_vault_id` is ForceNew on
-> `azurerm_key_vault_secret`, so editing it in place plans to *delete* the client secret
-> from the old vault and recreate it in the new one. The live dashboard is still reading
-> the old vault at that point, so that deletion breaks sign-in.
+This had to be additive, and **permission to take the dashboard down did not make the
+simple version viable.** Repointing `key_vault_id` fails before it can plan: that field
+is ForceNew, so Terraform must first refresh the existing secret at
+`kv-mynl-platform.vault.azure.net`, and a provider repointed to `aac88807…` cannot get a
+token a vault in `e22c9007…` will accept. The obstacle is token issuance, not caution.
 
-The secret has to exist in **both** vaults across the cutover. The smallest change that
-achieves it: add a second, count-gated resource for the target vault rather than editing
-the existing one.
+So the module gained `azurerm.target`, a second provider alias, and a count-gated
+`azurerm_key_vault_secret.client_secret_target`. The primary provider stays pinned to
+whichever tenant currently holds the secret, because it has to keep refreshing it. The
+alias falls back to mirroring the primary when the migration variables are unset, so it
+is always validly configured even when nothing uses it.
 
-```hcl
-variable "target_key_vault_id" {
-  description = "Second vault to receive the client secret during the migration. Empty disables."
-  type        = string
-  default     = ""
-}
+The same constraint shows up from the CLI: reading the old vault while `az` is pointed
+at the new tenant returns `AKV10032: Invalid issuer`, listing the tenants that vault will
+accept. Switch `az account set` to an old-subscription context to inspect it by hand.
 
-resource "azurerm_key_vault_secret" "client_secret_target" {
-  count = var.target_key_vault_id == "" ? 0 : 1
-
-  name            = var.client_secret_name
-  value           = azuread_application_password.dashboard.value
-  key_vault_id    = var.target_key_vault_id
-  content_type    = "entra-client-secret"
-  expiration_date = azuread_application_password.dashboard.end_date
-}
-```
-
-A second `azurerm` provider alias is needed for the target subscription, since the
-existing one is pinned to the old vault's. At Phase 6, delete the original resource and
-variable and promote the target to be the only one — a `terraform state mv` keeps that
-from being a destroy-and-recreate.
-
-Deliberately *not* done with `for_each` over a map of vaults: that is tidier, but
-converting the existing single resource into a keyed one requires `terraform state mv`
-on a live secret, which is more risk than the duplication saves.
-
-### Resource group naming
-
-The current names are inverted — `rg-dev` holds production, `rg-dev-b` holds dev. The
-migration corrects this to **`rg-prod` for production and `rg-dev` for dev**.
-
-This is nearly free *because* of the migration. Azure cannot rename a resource group in
-place; the alternative is creating new ones and moving resources, which not every
-resource type supports. Creating them fresh in the new subscription sidesteps that
-entirely.
-
-**Do not change `AZURE_RESOURCE_GROUP` before Phase 4.** The workflows read the resource
-group from that environment secret, and azd creates what it does not find — so pointing
-the old subscription at `rg-prod` would not fail, it would quietly provision a second
-copy of production alongside the real one. The secret changes only when the deploy target
-changes.
-
-Note this also *swaps* what `rg-dev` means: today it holds production, afterwards it
-holds dev. Any saved query, bookmark, or alert scoped to `rg-dev` wants re-checking.
-
-The Aspire environment name `dev-b` is left alone — correcting it means renaming
-`appsettings.dev-b.json` and the dev workflow's `ASPIRE_ENVIRONMENT`, which is a separate
-change from the resource groups.
+Phase 6 drops the original resource and promotes the target to be the only one.
 
 ### Phase 4 — Deploy the application stack, without custom domains
 
