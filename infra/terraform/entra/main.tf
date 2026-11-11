@@ -56,8 +56,9 @@ resource "azuread_application_password" "dashboard" {
   application_id = azuread_application.dashboard.id
   display_name   = "easy-auth-token-exchange"
 
-  # Expire 30 days after the rotation cadence so the two never coincide exactly.
-  end_date_relative = "${(var.client_secret_rotation_days + 30) * 24}h"
+  # Expire 30 days after the next scheduled rotation, so the two never coincide
+  # exactly and a missed apply degrades into a warning window, not an outage.
+  end_date = timeadd(time_rotating.client_secret.rotation_rfc3339, "720h")
 
   rotate_when_changed = {
     rotation = time_rotating.client_secret.id
