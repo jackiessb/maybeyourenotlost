@@ -175,34 +175,98 @@ cutover.
 
 ### Phase 1 — Bootstrap the target subscription
 
+**Done.**
+
 ```sh
-./infra/bootstrap-subscription.sh 20aad6af-afbd-4c72-a48d-59ae01ca2cb2 \
-  aac88807-ec5d-4c7a-8379-0f2baf8123e0
+STATE_ACCOUNT=stmynlstate ./infra/bootstrap-subscription.sh \
+  20aad6af-afbd-4c72-a48d-59ae01ca2cb2 aac88807-ec5d-4c7a-8379-0f2baf8123e0
 ```
 
-Registers the eight providers (`Subscription 1` is empty, so expect most to be
-unregistered — `Microsoft.KeyVault` was missing even on the *used* subscription) and
-provisions Terraform state storage in the target. State currently lives in the old
-subscription and must move with everything else; `terraform init -migrate-state` moves
-it once the new container exists.
+All eight providers were unregistered on the empty subscription and are now registered.
+Before that, even `az storage account check-name` failed with `SubscriptionNotFound` —
+which is what an unregistered `Microsoft.Storage` looks like, not a missing subscription.
+
+`STATE_ACCOUNT` is overridden because storage account names are globally unique and
+`stmynltfstate` is still held by the old subscription. The permanent name is
+**`stmynlstate`** in `rg-mynl-tfstate`, versioning enabled.
+
+Both state files were then migrated with `terraform init -migrate-state -force-copy`,
+and both backends in `versions.tf` now point at the new account. The old state blobs
+remain in `stmynltfstate` as versioned backups until Phase 6.
 
 ### Phase 2 — Platform layer in the target
 
-Repoint `infra/terraform/platform/terraform.tfvars` at the new tenant and subscription,
-then apply. Creates a second Key Vault and token store. The existing ones keep serving
-production until cutover.
+> **Do not simply repoint the existing tfvars and apply.** The `platform` state tracks
+> `kv-mynl-platform` and the token store *in the old subscription*, and the live
+> dashboard reads its secrets from that vault. Changing `subscription_id` in place makes
+> Terraform either plan to destroy those resources — breaking sign-in — or silently keep
+> managing the old ones and never create the new. The two deployments must have
+> **separate state**.
 
-Drop `secret_writer_principal_ids` and `EXTRA_STATE_PRINCIPALS` at this point — both
-exist only because Entra and the infrastructure were in different tenants. Once both are
-in `aac88807…`, one identity covers everything, and the MFA/guest friction from the
-first apply disappears.
+Use a Terraform workspace so both coexist until Phase 6:
 
-### Phase 3 — Re-point the Entra layer at the new vault
+```sh
+cd infra/terraform/platform
+git mv terraform.tfvars old.tfvars        # stop auto-loading; always be explicit
+terraform workspace new target
+terraform apply -var-file=target.tfvars   # new tenant + subscription
+```
 
-Update `key_vault_id`, `key_vault_tenant_id`, and `key_vault_subscription_id` in
-`infra/terraform/entra/terraform.tfvars` and apply. Writes the existing client secret
-into the new vault. **The app registration itself does not change** — no new client ID,
-no re-assignment of users, and the redirect URI is unchanged.
+`target.tfvars` carries `tenant_id = aac88807…` and
+`subscription_id = 20aad6af…`, and omits `secret_writer_principal_ids` — that grant
+exists only because Entra and the infrastructure were in different tenants. Once both
+are in `aac88807…` one identity covers everything, and the MFA and guest-object friction
+from the first apply disappears. `EXTRA_STATE_PRINCIPALS` likewise becomes unnecessary.
+
+Renaming `terraform.tfvars` matters: it is auto-loaded in *every* workspace, so leaving
+it in place would silently merge old-subscription values into the target apply. With it
+renamed, forgetting `-var-file` is an immediate error about missing required variables
+rather than a wrong-target apply. Both files are gitignored by the existing `*.tfvars`
+rule.
+
+The `default` workspace keeps managing the old deployment, which stays the rollback
+target and is torn down with `terraform destroy` in Phase 6.
+
+### Phase 3 — Write the client secret into the new vault
+
+**The app registration itself does not change** — no new client ID, no re-assignment of
+users, the redirect URI is unchanged. Only the secret's destination moves.
+
+> **The same destroy trap applies here.** `key_vault_id` is ForceNew on
+> `azurerm_key_vault_secret`, so editing it in place plans to *delete* the client secret
+> from the old vault and recreate it in the new one. The live dashboard is still reading
+> the old vault at that point, so that deletion breaks sign-in.
+
+The secret has to exist in **both** vaults across the cutover. The smallest change that
+achieves it: add a second, count-gated resource for the target vault rather than editing
+the existing one.
+
+```hcl
+variable "target_key_vault_id" {
+  description = "Second vault to receive the client secret during the migration. Empty disables."
+  type        = string
+  default     = ""
+}
+
+resource "azurerm_key_vault_secret" "client_secret_target" {
+  count = var.target_key_vault_id == "" ? 0 : 1
+
+  name            = var.client_secret_name
+  value           = azuread_application_password.dashboard.value
+  key_vault_id    = var.target_key_vault_id
+  content_type    = "entra-client-secret"
+  expiration_date = azuread_application_password.dashboard.end_date
+}
+```
+
+A second `azurerm` provider alias is needed for the target subscription, since the
+existing one is pinned to the old vault's. At Phase 6, delete the original resource and
+variable and promote the target to be the only one — a `terraform state mv` keeps that
+from being a destroy-and-recreate.
+
+Deliberately *not* done with `for_each` over a map of vaults: that is tidier, but
+converting the existing single resource into a keyed one requires `terraform state mv`
+on a live secret, which is more risk than the duplication saves.
 
 ### Resource group naming
 
@@ -274,6 +338,11 @@ Also in this phase, with no user impact:
 - Delete the old app registration `f32123ed`, if still present.
 - Remove the stale TXT values from `asuid.*`.
 - Raise the CNAME TTLs back to 300s if they were lowered.
+- `terraform destroy` the `default` workspace of `platform` to remove the old vault and
+  token store, then promote `client_secret_target` to be the only secret resource in
+  `entra` (via `terraform state mv`, not destroy-and-recreate).
+- Delete the old `stmynltfstate` state account once its versioned backups are no longer
+  wanted.
 - Delete the old resource groups, then the old subscription.
 - Reconsider `WithAzdResourceNaming()` — see below.
 

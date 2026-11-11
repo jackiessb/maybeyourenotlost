@@ -24,12 +24,12 @@ terraform {
   # versioned, private container rather than on a laptop.
   backend "azurerm" {
     resource_group_name  = "rg-mynl-tfstate"
-    storage_account_name = "stmynltfstate"
+    storage_account_name = "stmynlstate"
     container_name       = "tfstate"
     key                  = "entra.tfstate"
     use_azuread_auth     = true
-    tenant_id            = "e22c9007-0f6b-44b6-a403-af91c309278d"
-    subscription_id      = "c1a7d305-fc17-4bba-a6a9-bcb3cad99751"
+    tenant_id            = "aac88807-ec5d-4c7a-8379-0f2baf8123e0"
+    subscription_id      = "20aad6af-afbd-4c72-a48d-59ae01ca2cb2"
   }
 }
 
