@@ -30,7 +30,7 @@ Everything else is downstream of that.
 | Source subscription | `Jackson's Azure` — `c1a7d305-fc17-4bba-a6a9-bcb3cad99751` (tenant `e22c9007…`) |
 | Target subscription | `Subscription 1` — `20aad6af-afbd-4c72-a48d-59ae01ca2cb2` (tenant `aac88807…`), **empty**, Owner held |
 | Entra tenant (already moved) | `aac88807…`, app registration `774f2175…` |
-| DNS | **External** — no Azure DNS zone exists; all records are managed at the registrar/provider |
+| DNS | **AWS Route 53** (`ns-127.awsdns-15.com`) — no Azure DNS zone. All records at **300s TTL**, short enough that no pre-lowering is needed |
 | `customDomainVerificationId` | `1174F191…7FD3` — **subscription-scoped**, identical for every app in both environments |
 
 ### Environments and the naming inversion
@@ -52,7 +52,7 @@ created. Do not "fix" them.
 | Token store blobs | Disposable cached tokens — nothing to migrate |
 | Terraform state | `rg-mynl-tfstate/stmynltfstate` in the **old** subscription; needs moving too |
 
-## Hard problem 1: the DNS and certificate chicken-and-egg
+## DNS and certificates
 
 Container Apps managed certificates can only be issued **after** the hostname's CNAME
 already resolves to the target environment. But repointing that CNAME *is* the traffic
@@ -83,24 +83,50 @@ the parameters survive any future environment change.
 
 ### Closing the window
 
-Two options, and this is a decision to make before executing:
+**Decided: accept the TLS window and use managed certificates.** Service downtime during
+the migration is acceptable, so there is no need to bring a certificate of your own.
+That removes the only genuinely awkward part of this migration — no Let's Encrypt
+DNS-01 dance, no manual certificate to upload and later replace.
 
-- **Accept a brief TLS window.** Lower the CNAME TTLs to 60s *at least one old-TTL
-  period in advance* (the TTL reduction itself propagates at the old TTL), then flip and
-  immediately request the managed certificates. The window is however long issuance
-  takes — usually a few minutes, occasionally longer. Acceptable for `dash.`
-  (admin-only, one user) and `dev.`; the judgement call is `love.`, the public site.
-- **Bring your own certificate for zero downtime.** Obtain a certificate for the
-  hostnames out-of-band — Let's Encrypt with DNS-01 validation works and does *not*
-  require the CNAME to point anywhere — upload it to the new environment, and bind the
-  custom domains **before** the DNS flip. The flip is then instantaneous and clean. You
-  can swap to managed certificates afterwards at leisure. Cost is handling one
-  certificate manually.
+Azure's managed certificates cannot be exported, so the existing ones cannot be carried
+across regardless; each new environment issues its own.
 
-Azure's managed certificates cannot be exported, so there is no option to carry the
-existing ones across.
+Records are already at 300s TTL, so no lead time is required. Dropping them to 60s
+shortly before cutover is still worth doing — not for uptime, but because TTL is what
+bounds how fast a rollback takes effect.
 
-## Hard problem 2: Postgres data and the write window
+### Route 53 mechanics
+
+The AWS CLI is installed (`aws-cli/2.36.24`) but **not currently authenticated** — run
+`aws login` (or configure a profile) before the cutover.
+
+```sh
+ZONE=$(aws route53 list-hosted-zones-by-name --dns-name maybeyourenotlost.com \
+  --query 'HostedZones[0].Id' --output text)
+```
+
+Adding the new verification ID **alongside** the existing one — note that Route 53
+models multiple TXT values as multiple `ResourceRecords` entries under one record set,
+so this is an `UPSERT` carrying both values, not a second record:
+
+```json
+{"Changes":[{"Action":"UPSERT","ResourceRecordSet":{
+  "Name":"asuid.dash.maybeyourenotlost.com","Type":"TXT","TTL":300,
+  "ResourceRecords":[{"Value":"\"<OLD_ID>\""},{"Value":"\"<NEW_ID>\""}]}}]}
+```
+
+The cutover itself is an `UPSERT` of the three CNAMEs to the new environments' default
+domains. Apply with:
+
+```sh
+aws route53 change-resource-record-sets --hosted-zone-id "$ZONE" \
+  --change-batch file://cutover.json
+```
+
+`aws route53 wait resource-record-sets-changed --id <change-id>` blocks until the change
+has propagated to all Route 53 nameservers, which is the right signal to proceed.
+
+## Postgres data and the write window
 
 A dump/restore is not atomic with the DNS flip, so any writes that land on the old
 server after the final dump are lost. The app accepts public writes (encouragement
@@ -121,14 +147,23 @@ Mechanics:
 - **Managed identity grants on the new server** are handled by `aspire deploy`, which
   emits the `*-roles-postgres` modules — no manual grant needed.
 
-Options for the write window:
+**Decided: freeze writes.** Since downtime is acceptable, scale `encouragement-api` and
+`contacts-api` to zero replicas for the duration of the final dump and restore. This is
+strictly better than doing the cutover quickly and hoping — honest downtime instead of
+silently losing a submission that lands in the gap.
 
-- **Accept it.** Do the cutover during a quiet hour and accept that a submission in the
-  gap is lost. Simplest, and probably proportionate.
-- **Freeze writes.** Scale the APIs to zero replicas, or return maintenance responses,
-  for the duration of the final dump. Honest downtime instead of silent loss.
-- **Dump twice.** A full dump beforehand to size and rehearse the restore, then a second
-  short dump of only what changed at cutover. Reduces the window, adds complexity.
+```sh
+az containerapp update -n encouragement-api -g rg-dev --min-replicas 0 --max-replicas 0
+az containerapp update -n contacts-api      -g rg-dev --min-replicas 0 --max-replicas 0
+```
+
+Note these replica counts are also set in `AppHost.cs` (`MinReplicas = 1`,
+`MaxReplicas = 3`), so the next `aspire deploy` restores them — no need to undo the
+freeze by hand, but also don't expect it to persist across a deploy.
+
+Still worth doing a **rehearsal dump and restore** in Phase 4 while everything is still
+live, to size the real one and shake out authentication and firewall problems before
+anything is frozen.
 
 ## Phases
 
@@ -187,20 +222,23 @@ Also in this phase, with no user impact:
 
 - Add the new subscription's `customDomainVerificationId` as an **additional** TXT value
   on `asuid.love`, `asuid.dash`, and `asuid.dev`
-- Lower the CNAME TTLs to 60s, at least one old-TTL period before cutover
-- Do a rehearsal `pg_dump`/`pg_restore` to size the real one
+- Optionally drop the CNAME TTLs from 300s to 60s, to bound rollback time
+- Do a rehearsal `pg_dump`/`pg_restore` to size the real one and shake out auth and
+  firewall problems while nothing is frozen
+- Authenticate the AWS CLI (`aws login`) so the cutover is not waiting on it
 
 ### Phase 5 — Cutover
 
-1. Begin the write freeze, if that option was chosen
+1. Freeze writes — scale both APIs to zero replicas
 2. Final `pg_dump` of `encouragement` and `contacts`; restore into the new server
-3. If using BYOC: bind the real hostnames with the uploaded certificate **now**, before DNS
-4. Repoint the `love.`, `dash.`, and `dev.` CNAMEs at the new environments' default domains
-5. If using managed certificates: request them now; this is the TLS window
-6. Set the real domain and deterministic certificate names in
-   `appsettings.production.json` / `appsettings.dev-b.json` and redeploy, so source
-   control matches reality
-7. Smoke test: public site loads; dashboard sign-in completes with no `AADSTS` error and
+3. Repoint the `love.`, `dash.`, and `dev.` CNAMEs at the new environments' default
+   domains, then `aws route53 wait resource-record-sets-changed`
+4. Add the custom domains to the new apps and request managed certificates. This is the
+   TLS window: traffic has moved but no certificate exists for the hostname yet
+5. Set the real domain and deterministic certificate names in
+   `appsettings.production.json` / `appsettings.dev-b.json` and redeploy — this also
+   restores the replica counts frozen in step 1
+6. Smoke test: public site loads; dashboard sign-in completes with no `AADSTS` error and
    `/.auth/me` returns the user; both APIs read and write
 
 ### Phase 6 — Decommission
@@ -210,19 +248,19 @@ Also in this phase, with no user impact:
   `azd pipeline config` identity in `e22c9007…` can then go.
 - Delete the old app registration `f32123ed`, if still present.
 - Remove the stale TXT values from `asuid.*`.
-- Raise the CNAME TTLs back.
+- Raise the CNAME TTLs back to 300s if they were lowered.
 - Delete the old resource groups, then the old subscription.
 - Reconsider `WithAzdResourceNaming()` — see below.
 
-## Decisions needed before executing
+## Decisions
 
-1. **Who hosts DNS?** Not Azure. This determines whether record changes can be scripted
-   or must be clicked, and how much lead time the TTL reduction needs.
-2. **Zero-downtime (BYOC) or a brief TLS window?** Possibly different answers for
-   `love.` than for `dash.`/`dev.`
-3. **Write-freeze strategy** for the Postgres cutover: accept loss, freeze, or dump twice.
+1. ~~Who hosts DNS?~~ **AWS Route 53.** Records are scriptable via the AWS CLI (already
+   installed, needs authenticating) and are at 300s TTL, so no lead time is required.
+2. ~~Zero-downtime or a brief TLS window?~~ **Accept the window, use managed
+   certificates.** Downtime during the migration is acceptable.
+3. ~~Write-freeze strategy?~~ **Freeze**: scale both APIs to zero for the dump/restore.
 4. **Migrate the dev environment or rebuild it empty?** Rebuilding is recommended —
-   there is no dev data worth carrying, and it halves the cutover work.
+   there is no dev data worth carrying, and it halves the cutover work. Still open.
 5. **`WithAzdResourceNaming()`** on `AppHost.cs:9`. Tempting to drop for clean naming in
    a fresh subscription, but it is a single global setting affecting *both* environments,
    and changing it while the old subscription still serves traffic would try to rename
@@ -237,8 +275,8 @@ user-visible has changed. Phase 5 is different:
 - **Before the DNS flip**: abandon freely.
 - **After the DNS flip**: roll back by repointing the CNAMEs at the old environments,
   which still exist and still hold valid certificates. This is why the old subscription
-  is not deleted until Phase 6 — it is the rollback target, and the 60s TTL set in
-  Phase 4 is what makes the reversal quick.
+  is not deleted until Phase 6 — it is the rollback target, and the CNAME TTL is what
+  bounds how long the reversal takes to take effect.
 - **Writes that landed on the new stack** after cutover will not exist on the old
   server. A rollback after real traffic means reconciling those by hand, so the decision
   point is short: verify quickly, then commit.
