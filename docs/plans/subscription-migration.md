@@ -479,11 +479,31 @@ and removing. Steps 9 and 10 are retained below for the reasoning.
 
 ### Phase 6 — decommission
 
-17. **⚠ Repoint CI before merging the cutover commit.** Set
-    `manage_github_actions = true` with `github_environments` mapping `production` to
-    `rg-prod` and `dev` to `rg-dev`, and `cicd_subscription_id` to the new subscription.
-    Merging the cutover commit while CI still targets the old subscription would deploy
-    the new configuration there.
+17. **⚠ Repoint CI before merging the cutover commit.** Merging while CI still targets
+    the old subscription would deploy the new configuration there. **Done** — and it is
+    *two* applies, in two modules, which is the easy part to miss:
+
+    **17a — `entra`.** Set `manage_github_actions = true`, `cicd_subscription_id` to the
+    new subscription, and `github_environments` to the corrected convention
+    (`production → rg-prod`, `dev → rg-dev`). 12 added, 0 changed, 0 destroyed: the CI
+    app registration and service principal, a federated credential per environment, and
+    the four secrets per environment. The eight GitHub secrets had been set by hand, so
+    they show as `create` and are overwritten in place — `production`'s
+    `AZURE_RESOURCE_GROUP` moving `rg-dev → rg-prod` is the repoint itself. New identity:
+    client `c2fefa70-aa74-455b-bb13-9dfec09fe5e5`, principal
+    `4dbd4cd8-07aa-4165-9505-5de316d62574`.
+
+    **17b — `platform`.** Put that `cicd_principal_id` into `cicd_principal_ids` and
+    apply, which grants subscription-scoped `Contributor` and `User Access
+    Administrator`. **Without this CI authenticates successfully and then fails on
+    permissions** — the same two-module chicken-and-egg as the dashboard's vault grant
+    in step 5, since the principal does not exist until 17a has run.
+
+    Both files are `*.tfvars`, which is **gitignored**, so these values exist only on
+    the machine that applied them and in this document.
+
+    The old CI identity is left orphaned rather than deleted, so it stays a fallback
+    until step 24.
 18. Merge to `main` so source control matches reality, and confirm a CI run lands in the
     new subscription.
 19. Promote the client secret: drop `azurerm_key_vault_secret.client_secret` from the
