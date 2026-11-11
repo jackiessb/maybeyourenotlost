@@ -145,7 +145,12 @@ done
 Leave the `AZURE_LOCATION` repository variable — the workflows do read that one, via
 `vars.AZURE_LOCATION`.
 
-Note the environment naming inversion carried in `github_environments` and documented
-in `docs/environment.md`: GitHub's `production` environment deploys to the Azure
-resource group `rg-dev`, and GitHub's `dev` environment deploys to `rg-dev-b`. The
-names diverged from when each was created; matching them up would break both deploys.
+`github_environments` has **no default on purpose.** It maps each GitHub environment to
+the Azure resource group it deploys into, and those names change during the subscription
+migration. A stale default would point a deploy at the wrong resource group, and since
+azd creates what it does not find, that means a duplicate stack rather than a failure.
+The variable's own description carries the before and after values.
+
+Until the migration lands, the historical inversion in `docs/environment.md` is live:
+**`rg-dev` holds production.** Afterwards it is `rg-prod` for production and `rg-dev`
+for dev.

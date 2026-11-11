@@ -98,17 +98,27 @@ variable "github_environments" {
     GitHub Actions environments that deploy, keyed by environment name, with the
     Azure resource group each one targets.
 
-    Note the deliberate naming inversion documented in docs/environment.md: the
-    GitHub `production` environment deploys to the Azure resource group named
-    `rg-dev`, and the GitHub `dev` environment deploys to `rg-dev-b`. The names
-    diverged from when each was created. Do not "fix" these by matching them up.
+    **Deliberately has no default.** The resource group names change during the
+    subscription migration, and a stale default would silently point a deploy at
+    the wrong resource group -- which, since azd creates what it does not find,
+    means a duplicate stack rather than an error.
+
+      Before the migration (the historical inversion, see docs/environment.md):
+        production = { resource_group = "rg-dev" }
+        dev        = { resource_group = "rg-dev-b" }
+
+      After the migration (the corrected convention):
+        production = { resource_group = "rg-prod" }
+        dev        = { resource_group = "rg-dev" }
   DESC
   type = map(object({
     resource_group = string
   }))
-  default = {
-    production = { resource_group = "rg-dev" }
-    dev        = { resource_group = "rg-dev-b" }
+  default = {}
+
+  validation {
+    condition     = !var.manage_github_actions || length(var.github_environments) > 0
+    error_message = "github_environments must be set explicitly when manage_github_actions is true, so the resource group each environment deploys into is a deliberate choice rather than a stale default."
   }
 }
 

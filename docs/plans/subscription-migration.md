@@ -30,7 +30,7 @@ Everything else is downstream of that.
 | Source subscription | `Jackson's Azure` — `c1a7d305-fc17-4bba-a6a9-bcb3cad99751` (tenant `e22c9007…`) |
 | Target subscription | `Subscription 1` — `20aad6af-afbd-4c72-a48d-59ae01ca2cb2` (tenant `aac88807…`), **empty**, Owner held |
 | Entra tenant (already moved) | `aac88807…`, app registration `774f2175…` |
-| DNS | **AWS Route 53** (`ns-127.awsdns-15.com`) — no Azure DNS zone. All records at **300s TTL**, short enough that no pre-lowering is needed |
+| DNS | **AWS Route 53**, zone `Z008615911AMS7RX4EF3I` (`maybeyourenotlost.com`, 11 records) — no Azure DNS zone. All records at **300s TTL**, short enough that no pre-lowering is needed |
 | `customDomainVerificationId` | `1174F191…7FD3` — **subscription-scoped**, identical for every app in both environments |
 
 ### Environments and the naming inversion
@@ -97,13 +97,15 @@ bounds how fast a rollback takes effect.
 
 ### Route 53 mechanics
 
-The AWS CLI is installed (`aws-cli/2.36.24`) but **not currently authenticated** — run
-`aws login` (or configure a profile) before the cutover.
+The AWS CLI is installed and authenticated against account `731371835931`.
 
 ```sh
-ZONE=$(aws route53 list-hosted-zones-by-name --dns-name maybeyourenotlost.com \
-  --query 'HostedZones[0].Id' --output text)
+ZONE=Z008615911AMS7RX4EF3I   # maybeyourenotlost.com
 ```
+
+Note the CLI is currently authenticated as the account **root** user. Worth replacing
+with an IAM user or role scoped to Route 53 before relying on it routinely — root
+credentials cannot be scoped or easily revoked.
 
 Adding the new verification ID **alongside** the existing one — note that Route 53
 models multiple TXT values as multiple `ResourceRecords` entries under one record set,
@@ -202,6 +204,29 @@ Update `key_vault_id`, `key_vault_tenant_id`, and `key_vault_subscription_id` in
 into the new vault. **The app registration itself does not change** — no new client ID,
 no re-assignment of users, and the redirect URI is unchanged.
 
+### Resource group naming
+
+The current names are inverted — `rg-dev` holds production, `rg-dev-b` holds dev. The
+migration corrects this to **`rg-prod` for production and `rg-dev` for dev**.
+
+This is nearly free *because* of the migration. Azure cannot rename a resource group in
+place; the alternative is creating new ones and moving resources, which not every
+resource type supports. Creating them fresh in the new subscription sidesteps that
+entirely.
+
+**Do not change `AZURE_RESOURCE_GROUP` before Phase 4.** The workflows read the resource
+group from that environment secret, and azd creates what it does not find — so pointing
+the old subscription at `rg-prod` would not fail, it would quietly provision a second
+copy of production alongside the real one. The secret changes only when the deploy target
+changes.
+
+Note this also *swaps* what `rg-dev` means: today it holds production, afterwards it
+holds dev. Any saved query, bookmark, or alert scoped to `rg-dev` wants re-checking.
+
+The Aspire environment name `dev-b` is left alone — correcting it means renaming
+`appsettings.dev-b.json` and the dev workflow's `ASPIRE_ENVIRONMENT`, which is a separate
+change from the resource groups.
+
 ### Phase 4 — Deploy the application stack, without custom domains
 
 `aspire deploy` into the new subscription with the custom domain and certificate
@@ -259,13 +284,15 @@ Also in this phase, with no user impact:
 2. ~~Zero-downtime or a brief TLS window?~~ **Accept the window, use managed
    certificates.** Downtime during the migration is acceptable.
 3. ~~Write-freeze strategy?~~ **Freeze**: scale both APIs to zero for the dump/restore.
-4. **Migrate the dev environment or rebuild it empty?** Rebuilding is recommended —
-   there is no dev data worth carrying, and it halves the cutover work. Still open.
-5. **`WithAzdResourceNaming()`** on `AppHost.cs:9`. Tempting to drop for clean naming in
-   a fresh subscription, but it is a single global setting affecting *both* environments,
-   and changing it while the old subscription still serves traffic would try to rename
-   live resources. **Leave it alone until the old subscription is decommissioned**, then
-   decide.
+4. ~~Migrate the dev environment or rebuild it empty?~~ **Rebuild empty.** No dev data
+   is worth carrying, and it roughly halves the cutover work — no second Postgres
+   dump/restore, and `dev.` can be repointed whenever rather than on the critical path.
+5. ~~`WithAzdResourceNaming()`~~ **Keep it for now**, deprecate later. It is a single
+   global setting on `AppHost.cs:9` affecting both environments, and changing it while
+   the old subscription still serves traffic would try to rename live resources. Revisit
+   once the old subscription is gone.
+6. ~~Resource group naming~~ **Corrected to `rg-prod` / `rg-dev` during the migration** —
+   see [resource group naming](#resource-group-naming).
 
 ## Rollback
 
