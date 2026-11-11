@@ -318,7 +318,7 @@ Phases 1-3 are done. Steps marked **⚠** must not be reordered — the note say
 8. Rehearse `pg_dump` / `pg_restore` while nothing is frozen, to size the real run and
    shake out authentication and firewall problems.
 
-### Optional: validate dashboard sign-in before cutover — ~~skipped~~
+### Optional: validate dashboard sign-in before cutover
 
 **Decided: skip it.** Sign-in is tested after cutover instead. Everything up to the
 final leg of the OAuth exchange is already verified on the new environment, downtime is
