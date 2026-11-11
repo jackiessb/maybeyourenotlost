@@ -522,17 +522,29 @@ and removing. Steps 9 and 10 are retained below for the reasoning.
       the new environment — and could not be issued regardless, because
       `dev.maybeyourenotlost.com` still resolves to the old `jollydune-*` environment.
 
-    That is step 21 happening by accident, half-built and billing. Pick one before
-    opening the PR:
+    That is step 21 happening by accident, half-built and billing.
 
-    - **Drop `dev` from `github_environments`** and re-apply `entra`, leaving dev's
-      secrets pointed at the old subscription until step 21. Smallest change, and it
-      keeps dev deploys working where dev still lives.
-    - **Disable `deploy-dev.yml`** (`gh workflow disable dev`) for the duration.
-    - **Do step 21 first**, deliberately, and let the PR's dev deploy land on a dev
-      environment that already exists.
+    **Mitigated: `dev` is dropped from `github_environments`** and `entra` re-applied —
+    5 destroyed, 0 added, so the dev federated credential and all four dev secrets are
+    gone. Note Terraform *deletes* them rather than restoring their previous
+    hand-set values, so the dev environment now has no credentials at all and a dev
+    deploy fails at `azure/login`. Production's four are untouched.
 
-    Pushing the branch alone is safe and triggers nothing.
+    **⚠ And that makes step 21 a prerequisite of this step, not a successor.** `main`'s
+    ruleset carries
+    `required_deployments: {required_deployment_environments: ["dev"]}`, so **a merge
+    needs a *successful* dev deployment.** With dev's secrets dropped it fails; with
+    them pointed at a `rg-dev` that does not exist it also fails. Either way the merge
+    is blocked until the dev environment genuinely exists in this subscription.
+
+    **So do step 21 before step 18.** The order of operations is wrong on this point and
+    the numbering is left alone only to keep the cross-references stable. The remaining
+    alternative, if the dev rebuild needs to wait, is to drop `dev` from the ruleset's
+    `required_deployment_environments` — a branch-protection change on a public repo,
+    which is why it is not the default.
+
+    Pushing the branch alone is safe and triggers nothing: `deploy-dev.yml` has no
+    `push` trigger. `MYNL-19` is pushed and current.
 19. Promote the client secret: drop `azurerm_key_vault_secret.client_secret` from the
     `entra` module and make `client_secret_target` the only one, via `terraform state mv`
     rather than destroy-and-recreate. Remove the `azurerm.target` alias and the
@@ -541,8 +553,28 @@ and removing. Steps 9 and 10 are retained below for the reasoning.
     while Entra and the infrastructure were in different tenants.
 21. Rebuild the dev environment in the new subscription (empty, no data migration), then
     repoint the `dev.` CNAME and set its hostname and certificate name in
-    `appsettings.dev-b.json`. Decide its Postgres SKU here — see
+    `appsettings.dev-b.json`.
+
+    **⚠ This now has to happen before step 18**, because merging requires a successful
+    `dev` deployment — see the ruleset note there.
+
+    **Decided: dev gets its own Postgres server**, `Standard_D2ds_v5` /
+    GeneralPurpose like production, rather than sharing production's with separate
+    databases. Full isolation at roughly **+$130/mo**, taking the pair to ~$260/mo. It
+    cannot be Burstable: that tier is unavailable subscription-wide, per
     [decision 7](#decisions).
+
+    Three things from the production build apply here and are easy to forget:
+
+    - `dev-cert` must be **created before** the deploy that binds it, and the `dev.`
+      CNAME has to point at the new environment first — see
+      [certificate names](#certificate-names-are-free-form).
+    - The dev Container App's system-assigned identity needs
+      `Key Vault Secrets User` on `kv-mynl` if dev ever gets the dashboard; the
+      dashboard is production-only today (`includeDashboard`), so this is likely moot.
+    - Re-add `dev` to `github_environments` with `resource_group = "rg-dev"` and
+      re-apply `entra` once the environment exists, restoring the four dev secrets that
+      step 18's mitigation deleted.
 22. **⚠ Only now delete the old subscription's resources**, and only after the new stack
     has been verified under real use. Until this step the old environments are the
     rollback target: repointing the CNAMEs back is the entire recovery procedure.
@@ -975,9 +1007,10 @@ never varies.
    probe: both `Standard_B1ms` and `Standard_B2s` fail with `SkuNotAvailable` while
    `Standard_D2ds_v5` reaches `Ready`. Burstable is therefore restricted **tier-wide**
    in this subscription. ~~The dev environment's SKU~~ follows from that — it cannot be
-   Burstable either — which leaves the real sub-question as **whether dev needs its own
-   server at all** at ~$130/mo, or should share production's with separate databases.
-   The revisited replica limits remain open. See
+   Burstable either. ~~Whether dev needs its own server at all~~ **decided: dev gets
+   its own `Standard_D2ds_v5`**, chosen for isolation over sharing production's server
+   with separate databases — roughly +$130/mo, taking Postgres to ~$260/mo in total.
+   Built at step 21. The revisited replica limits remain open. See
    [Phase 4](#phase-4--deploy-the-application-stack-without-custom-domains).
 
 ## Rollback
