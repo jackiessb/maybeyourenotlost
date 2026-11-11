@@ -407,17 +407,45 @@ the investigation:
 
 ## Uncommitted state
 
-Two working-tree edits are deliberate, local, and **must not be committed as they
-stand**. Both are backed up in the session scratchpad.
+Two files differ from `HEAD`. Parts of those diffs are deliberate temporary edits that
+**must not be committed**; other parts are genuine improvements that **should** be. They
+are tangled in the same files, so separate them deliberately rather than staging whole
+files.
 
-| File | Local deviation | Why it must not ship |
-| --- | --- | --- |
-| `apphost/appsettings.production.json` | `customDomain`, `certificateName`, `dashboardCustomDomain`, `dashboardCertificateName` emptied; both Key Vault URIs point at `kv-mynl` | CI still deploys to the **old** subscription on push to `main`. Committing this would strip the custom domains off the live production apps. |
-| `apphost/AppHost.cs` | `const bool bindFrontendDomain = false;` and `bindDashboardDomain = false` | Same reason — a deploy to the old subscription would unbind `love.` and `dash.` |
+### `apphost/appsettings.production.json` — discard entirely
 
-The Postgres availability-zone override in `AppHost.cs` is a genuine improvement and
-should be committed, but it shares a file with those temporary constants, so the
-constants have to be restored to their conditional form first.
+`customDomain`, `certificateName`, `dashboardCustomDomain` and `dashboardCertificateName`
+emptied, and both Key Vault URIs pointed at `kv-mynl`. CI still deploys to the **old**
+subscription on push to `main`, so committing this would strip the custom domains off the
+live production apps and point them at a vault their managed identity cannot read.
+
+`git checkout -- apphost/appsettings.production.json` restores it; `HEAD` holds the
+correct live values.
+
+### `apphost/AppHost.cs` — mixed; keep some, discard some
+
+**Keep** (not yet committed, and worth committing):
+
+- `using Azure.Provisioning.PostgreSql;`
+- The `ConfigureInfrastructure` callback on the Postgres resource setting
+  `server.AvailabilityZone = ""`
+- The GeneralPurpose `Sku` override, once added
+
+**Discard**:
+
+- `const bool bindFrontendDomain = false;` / `bindDashboardDomain = false` and the two
+  `if (...)` blocks wrapping `app.ConfigureCustomDomain(...)`
+
+Note what `HEAD` actually contains: two plain, unconditional `ConfigureCustomDomain`
+calls and **no Postgres configuration at all**. There is no committed conditional form to
+restore to — the config-driven conditional never worked (see
+[findings](#findings-worth-keeping)) and was never committed. Restoring means returning
+those two call sites to their unconditional form, not reinstating a conditional.
+
+A scratchpad copy of both files exists but is session-local and will not survive. `HEAD`
+is the real recovery path for `appsettings.production.json`; the Postgres override in
+`AppHost.cs` exists **only in the working tree**, so commit it before discarding
+anything in that file.
 
 ## Decisions
 
