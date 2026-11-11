@@ -505,7 +505,34 @@ and removing. Steps 9 and 10 are retained below for the reasoning.
     The old CI identity is left orphaned rather than deleted, so it stays a fallback
     until step 24.
 18. Merge to `main` so source control matches reality, and confirm a CI run lands in the
-    new subscription.
+    new subscription. `main` requires a pull request, so this is push → PR → merge
+    rather than a direct push.
+
+    **⚠ Opening the PR deploys dev, before anyone merges anything.**
+    `deploy-dev.yml` triggers on `pull_request` — not on push — and runs a real
+    `aspire deploy -e dev-b` using the `dev` GitHub environment secrets, which step 17
+    repointed at this subscription and at `rg-dev`. Since `rg-dev` does not exist here
+    and azd creates what it does not find, opening the PR would:
+
+    - create `rg-dev` and provision a whole dev stack in it, **including a
+      GeneralPurpose Postgres at roughly $130/mo** — Burstable being unavailable
+      subscription-wide, per [decision 7](#decisions), whose open question is precisely
+      whether dev should have its own server at all; then
+    - **fail anyway**, on `CertificateNotFound` for `dev-cert`, which does not exist in
+      the new environment — and could not be issued regardless, because
+      `dev.maybeyourenotlost.com` still resolves to the old `jollydune-*` environment.
+
+    That is step 21 happening by accident, half-built and billing. Pick one before
+    opening the PR:
+
+    - **Drop `dev` from `github_environments`** and re-apply `entra`, leaving dev's
+      secrets pointed at the old subscription until step 21. Smallest change, and it
+      keeps dev deploys working where dev still lives.
+    - **Disable `deploy-dev.yml`** (`gh workflow disable dev`) for the duration.
+    - **Do step 21 first**, deliberately, and let the PR's dev deploy land on a dev
+      environment that already exists.
+
+    Pushing the branch alone is safe and triggers nothing.
 19. Promote the client secret: drop `azurerm_key_vault_secret.client_secret` from the
     `entra` module and make `client_secret_target` the only one, via `terraform state mv`
     rather than destroy-and-recreate. Remove the `azurerm.target` alias and the
