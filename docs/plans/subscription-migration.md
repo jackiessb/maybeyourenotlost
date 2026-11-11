@@ -260,8 +260,11 @@ Phases 1-3 are done. Steps marked **⚠** must not be reordered — the note say
 12. Restore the two `ConfigureCustomDomain` call sites to their unconditional form,
     discard the temporary flags, and set the real values in
     `appsettings.production.json`: the live hostnames, the **deterministic** certificate
-    names (`love-cert`, `dash-cert`, `dev-cert` — not the old
-    `mc-cae-yudlalf6hm-*` strings), and the `kv-mynl` Key Vault URIs.
+    names (`love-cert` and `dash-cert` — not the old `mc-cae-yudlalf6hm-*` strings), and
+    the `kv-mynl` Key Vault URIs. `dev-cert` belongs to step 19, not here.
+
+    **Commit this on the branch but do not merge it yet** — step 15 has to repoint CI
+    first, or a CI run would deploy this configuration to the old subscription.
 13. `aspire deploy` again. This binds the custom domains and issues the managed
     certificates, closing the TLS window.
 14. Smoke test: public site loads; dashboard sign-in completes with no `AADSTS` error and
