@@ -21,7 +21,9 @@ isn't, and what it would take to close the gap.
 > app's system-assigned identity, the issuer is
 > `https://login.microsoftonline.com/aac88807-.../v2.0`, `tokenStore.enabled` is true,
 > and `/.auth/me` returns the signed-in user. What remains is the subscription
-> migration — see [consolidation](#tenant-and-subscription-consolidation).
+> migration: [consolidation](#tenant-and-subscription-consolidation) for the decision
+> and its rationale, and [`subscription-migration.md`](subscription-migration.md) for
+> the phased cutover runbook.
 
 ## The working configuration (confirmed end-to-end this session)
 
@@ -499,8 +501,8 @@ resolve secrets before the vault holds them. Only phases 1 and 3 recur.
       `AddAzureContainerAppEnvironment("cae")`
 - [x] Enable the `azurerm` remote state backend for both Terraform modules —
       `rg-mynl-tfstate/stmynltfstate`, versioning on
-- [ ] Plan the Postgres data migration and the DNS/certificate cutover for the
-      subscription move
+- [x] Plan the Postgres data migration and the DNS/certificate cutover for the
+      subscription move — [`subscription-migration.md`](subscription-migration.md)
 - [x] Delete the dead repository-level `AZURE_*` variables left by
       `azd pipeline config` — removed `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`,
       `AZURE_SUBSCRIPTION_ID`, `AZURE_ENV_NAME`; kept `AZURE_LOCATION`, which the
