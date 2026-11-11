@@ -186,7 +186,12 @@ cmd_dump() {
   warn "these contain real submissions and phone numbers -- do not commit them"
 }
 
-# MODE=data-only (default, non-destructive) or MODE=clean (drops and recreates objects)
+# MODE=data-only (default) keeps the EF-created schema and replaces the data.
+# MODE=clean drops and recreates every object from the dump instead.
+#
+# Both are repeatable, and both discard whatever is currently in the target -- which is
+# the point, since the target is a copy destination. Neither is safe to point at a
+# database whose contents you want to keep.
 cmd_restore() {
   local mode="${MODE:-data-only}" flags
   case "$mode" in
@@ -196,7 +201,11 @@ cmd_restore() {
   esac
 
   warn "restoring with $flags (MODE=$mode)"
-  [[ "$mode" == clean ]] && warn "this DROPS existing objects in the target databases"
+  if [[ "$mode" == clean ]]; then
+    warn "this DROPS and recreates every object in the target databases"
+  else
+    warn "this TRUNCATEs the target's tables first, then reloads them from the dump"
+  fi
 
   local role token
   role=$(pg_role_for "$NEW_SUB" "$NEW_RG" "$NEW_SRV")
@@ -207,6 +216,32 @@ cmd_restore() {
 
     local toc_arg=()
     if [[ "$mode" == data-only ]]; then
+      # A data-only restore is not idempotent: it assumes the target tables are
+      # empty, so it works once and then fails every re-run on the primary key
+      # ("Key (Id)=(1) already exists"). Clear the target's data first so the phase
+      # can be run repeatedly -- during the rehearsal, and again at cutover when the
+      # rehearsal's own data is still sitting there.
+      #
+      # CASCADE handles the foreign-key ordering. __EFMigrationsHistory is left alone
+      # deliberately: it is EF's bookkeeping, the target's row is already correct, and
+      # its data is excluded from the restore below.
+      say "clearing existing data in $db (keeping the schema)"
+      pg "$token" psql -h "$NEW_SRV.postgres.database.azure.com" \
+        -U "$role" -d "$db" -v ON_ERROR_STOP=1 -q -c "
+          do \$\$
+          declare stmt text;
+          begin
+            select 'truncate table '
+                   || string_agg(format('%I.%I', schemaname, relname), ', ')
+                   || ' cascade'
+              into stmt
+              from pg_stat_user_tables
+             where relname <> '__EFMigrationsHistory';
+            if stmt is not null then
+              execute stmt;
+            end if;
+          end \$\$;"
+
       # EF applied InitialCreate on the target when the API first started, so the
       # target's __EFMigrationsHistory already holds the row the dump also carries,
       # and COPY fails on its primary key. That row is identical bookkeeping, not
@@ -268,6 +303,44 @@ cmd_verify() {
     else
       printf '    \033[1;31m-> MISMATCH\033[0m\n'
     fi
+  done
+
+  # Identity sequences on the target. The restored rows carry explicit Id values, and
+  # TRUNCATE does not reset the owning sequence -- pg_dump's setval entries are what
+  # put it right. If one is left behind max(Id), the table looks perfect and then the
+  # first insert after cutover fails on a duplicate key. Cheap to check, miserable to
+  # debug later.
+  local seq_q="
+    select coalesce(string_agg(line, E'\n    ' order by line), '(no identity columns)') from (
+      select t.relname || '.' || a.attname
+             || '  seq=' || coalesce(ps.last_value::text, 'unset')
+             || '  max=' || coalesce((xpath('/row/c/text()', query_to_xml(
+                  format('select max(%I) as c from %I.%I', a.attname, n.nspname, t.relname),
+                  false, true, '')))[1]::text, '0')
+             || case
+                  when coalesce((xpath('/row/c/text()', query_to_xml(
+                         format('select max(%I) as c from %I.%I', a.attname, n.nspname, t.relname),
+                         false, true, '')))[1]::text::bigint, 0) = 0 then '  (empty)'
+                  when coalesce(ps.last_value, 0) >= coalesce((xpath('/row/c/text()', query_to_xml(
+                         format('select max(%I) as c from %I.%I', a.attname, n.nspname, t.relname),
+                         false, true, '')))[1]::text::bigint, 0) then '  OK'
+                  else '  BEHIND -- next insert will collide'
+                end as line
+      from pg_class t
+      join pg_namespace n on n.oid = t.relnamespace
+      join pg_attribute a on a.attrelid = t.oid and a.attnum > 0 and not a.attisdropped
+      join pg_depend d on d.refobjid = t.oid and d.refobjsubid = a.attnum
+                      and d.deptype in ('a','i')
+      join pg_class sq on sq.oid = d.objid and sq.relkind = 'S'
+      left join pg_sequences ps on ps.schemaname = n.nspname and ps.sequencename = sq.relname
+      where t.relkind = 'r' and n.nspname = 'public'
+    ) s;"
+
+  say "identity sequences on the target"
+  for db in "${DBS[@]}"; do
+    printf '  %s\n    ' "$db"
+    pg "$new_token" psql -h "$NEW_SRV.postgres.database.azure.com" \
+      -U "$new_role" -d "$db" -At -c "$seq_q"
   done
 }
 
