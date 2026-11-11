@@ -38,10 +38,10 @@ Everything else is downstream of that.
 | | |
 | --- | --- |
 | Source subscription | `Jackson's Azure` — `c1a7d305-fc17-4bba-a6a9-bcb3cad99751` (tenant `e22c9007…`) |
-| Target subscription | `Subscription 1` — `20aad6af-afbd-4c72-a48d-59ae01ca2cb2` (tenant `aac88807…`), **empty**, Owner held |
+| Target subscription | `Subscription 1` — `20aad6af-afbd-4c72-a48d-59ae01ca2cb2` (tenant `aac88807…`), Owner held. No longer empty: holds `rg-mynl-tfstate`, `rg-mynl-platform`, and a partially-built `rg-prod` |
 | Entra tenant (already moved) | `aac88807…`, app registration `774f2175…` |
 | DNS | **AWS Route 53**, zone `Z008615911AMS7RX4EF3I` (`maybeyourenotlost.com`, 11 records) — no Azure DNS zone. All records at **300s TTL**, short enough that no pre-lowering is needed |
-| `customDomainVerificationId` | `1174F191…7FD3` — **subscription-scoped**, identical for every app in both environments |
+| `customDomainVerificationId` | **Subscription-scoped**, so there is one per subscription: old `1174F191…7FD3`, new `17CFD1AA…B00F`. Both are already live on every `asuid.*` record |
 
 ### Environments and the naming inversion
 
@@ -60,7 +60,7 @@ created. Do not "fix" them.
 | Postgres | `postgres-yudlalf6hmivo` (prod) and `postgres-jgbowniw3fqck` (dev) — v16, Standard_B1ms Burstable, 32 GB, HA disabled |
 | Databases | `encouragement` and `contacts` on each |
 | Token store blobs | Disposable cached tokens — nothing to migrate |
-| Terraform state | `rg-mynl-tfstate/stmynltfstate` in the **old** subscription; needs moving too |
+| Terraform state | Moved in Phase 1 to `rg-mynl-tfstate/stmynlstate` in the **new** subscription. The old `stmynltfstate` retains versioned backups until Phase 6 |
 
 ## DNS and certificates
 
@@ -147,15 +147,17 @@ hope.
 
 Mechanics:
 
-- v16 → v16, same SKU, so `pg_dump`/`pg_restore` per database with no version concerns.
+- v16 → v16, so `pg_dump`/`pg_restore` per database with no version concerns. The SKU
+  does change — `Standard_B1ms`/Burstable to `Standard_D2ds_v5`/GeneralPurpose — but that
+  is irrelevant to a logical dump and restore.
 - **Authentication**: the servers use Entra auth and the APIs connect by managed
   identity, so there is no stored password to reuse. Either enable password
   authentication temporarily (per [`environment.md`](../environment.md)) or authenticate
   `pg_dump` with an Entra access token as the password.
 - **Firewall**: the running machine's IP must be in the server's allowlist, on both
   source and target.
-- **Connections**: Standard_B1ms caps at 50 connections. Keep `pg_restore -j` modest —
-  single-digit parallelism is plenty for 32 GB of burstable storage.
+- **Connections**: the *source* `Standard_B1ms` caps at 50, so keep `pg_dump -j` modest.
+  The GeneralPurpose target allows far more, so the restore side is not the constraint.
 - **Managed identity grants on the new server** are handled by `aspire deploy`, which
   emits the `*-roles-postgres` modules — no manual grant needed.
 
@@ -165,9 +167,16 @@ strictly better than doing the cutover quickly and hoping — honest downtime in
 silently losing a submission that lands in the gap.
 
 ```sh
-az containerapp update -n encouragement-api -g rg-dev --min-replicas 0 --max-replicas 0
-az containerapp update -n contacts-api      -g rg-dev --min-replicas 0 --max-replicas 0
+OLD=c1a7d305-fc17-4bba-a6a9-bcb3cad99751
+az containerapp update --subscription $OLD -g rg-dev -n encouragement-api \
+  --min-replicas 0 --max-replicas 0
+az containerapp update --subscription $OLD -g rg-dev -n contacts-api \
+  --min-replicas 0 --max-replicas 0
 ```
+
+`--subscription` is explicit because these target the **old** subscription while the CLI
+will usually be pointed at the new one, and `rg-dev` holds production until the resource
+groups are renamed.
 
 Note these replica counts are also set in `AppHost.cs` (`MinReplicas = 1`,
 `MaxReplicas = 3`), so the next `aspire deploy` restores them — no need to undo the
@@ -176,6 +185,29 @@ freeze by hand, but also don't expect it to persist across a deploy.
 Still worth doing a **rehearsal dump and restore** in Phase 4 while everything is still
 live, to size the real one and shake out authentication and firewall problems before
 anything is frozen.
+
+## Resource group naming
+
+The current names are inverted — `rg-dev` holds production, `rg-dev-b` holds dev. The
+migration corrects this to **`rg-prod` for production and `rg-dev` for dev**.
+
+This is nearly free *because* of the migration. Azure cannot rename a resource group in
+place; the alternative is creating new ones and moving resources, which not every
+resource type supports. Creating them fresh in the new subscription sidesteps that
+entirely.
+
+**Do not change `AZURE_RESOURCE_GROUP` before the cutover.** The workflows read the
+resource group from that environment secret, and azd creates what it does not find — so
+pointing the old subscription at `rg-prod` would not fail, it would quietly provision a
+second copy of production alongside the real one. The secret changes only when the deploy
+target changes (step 15).
+
+Note this also *swaps* what `rg-dev` means: today it holds production, afterwards it
+holds dev. Any saved query, bookmark, or alert scoped to `rg-dev` wants re-checking.
+
+The Aspire environment name `dev-b` is left alone — correcting it means renaming
+`appsettings.dev-b.json` and the dev workflow's `ASPIRE_ENVIRONMENT`, which is a separate
+change from the resource groups.
 
 ## Order of operations
 
@@ -216,11 +248,15 @@ Phases 1-3 are done. Steps marked **⚠** must not be reordered — the note say
 9. Freeze writes: scale `encouragement-api` and `contacts-api` to zero replicas **in the
    old subscription**.
 10. Final `pg_dump` of `encouragement` and `contacts`; restore into the new server.
-11. **⚠ Repoint the `love.`, `dash.` and `dev.` CNAMEs at the new environments' default
-    domains, and only then bind the domains.** A custom subdomain cannot be bound until
-    its CNAME already resolves to the target environment. Traffic moves here and the TLS
-    window opens. Wait with
-    `aws route53 wait resource-record-sets-changed --id <change-id>`.
+11. **⚠ Repoint the `love.` and `dash.` CNAMEs at the new environment's default domain,
+    and only then bind the domains.** A custom subdomain cannot be bound until its CNAME
+    already resolves to the target environment. Traffic moves here and the TLS window
+    opens. Wait with `aws route53 wait resource-record-sets-changed --id <change-id>`.
+
+    **Leave `dev.` alone.** The dev environment is not rebuilt until step 19, so
+    repointing `dev.` now would aim it at an environment that does not exist. It moves
+    with the rebuild, off the critical path — which is the whole point of
+    [decision 4](#decisions).
 12. Restore the two `ConfigureCustomDomain` call sites to their unconditional form,
     discard the temporary flags, and set the real values in
     `appsettings.production.json`: the live hostnames, the **deterministic** certificate
@@ -246,7 +282,10 @@ Phases 1-3 are done. Steps marked **⚠** must not be reordered — the note say
     `target_key_vault_*` variables.
 18. Drop `secret_writer_principal_ids` and `EXTRA_STATE_PRINCIPALS` — both existed only
     while Entra and the infrastructure were in different tenants.
-19. Rebuild the dev environment in the new subscription (empty, no data migration).
+19. Rebuild the dev environment in the new subscription (empty, no data migration), then
+    repoint the `dev.` CNAME and set its hostname and certificate name in
+    `appsettings.dev-b.json`. Decide its Postgres SKU here — see
+    [decision 7](#decisions).
 20. **⚠ Only now delete the old subscription's resources**, and only after the new stack
     has been verified under real use. Until this step the old environments are the
     rollback target: repointing the CNAMEs back is the entire recovery procedure.
@@ -308,7 +347,8 @@ in use. **`az keyvault check-name` is not trustworthy** — it reported
 instead:
 
 ```sh
-dig +short kv-mynl.vault.azure.net    # resolves => name taken
+dig +short kv-mynl-platform.vault.azure.net   # resolves => taken (the old vault)
+dig +short kv-mynl.vault.azure.net            # no answer => free (what we used)
 ```
 
 `secret_writer_principal_ids` is empty here and should stay that way. It existed only
@@ -341,8 +381,11 @@ Phase 6 drops the original resource and promotes the target to be the only one.
 
 ### Phase 4 — Deploy the application stack, without custom domains
 
-**In progress, blocked.** `aspire deploy` has been run twice against
-`Subscription 1` / `rg-prod`. Infrastructure partially exists; no application is running.
+**In progress.** `aspire deploy` has been run twice against `Subscription 1` /
+`rg-prod`. Infrastructure partially exists; no application is running yet. The blocker
+that stopped both runs is now **decided but not implemented** — see
+[the SKU decision](#phase-4--deploy-the-application-stack-without-custom-domains)
+below.
 
 Created and healthy (resource token `jcykdmvrxadbu`):
 
@@ -421,7 +464,9 @@ Untested since, because the second deploy never got past Postgres. May be transi
 - Implement the GeneralPurpose SKU override and get a server provisioned
 - Get the container apps deployed (retry the ACR pushes)
 - Verify the stack over the default `*.azurecontainerapps.io` hostnames
-- Bind a temporary hostname and exercise end-to-end, including dashboard sign-in
+- Optionally exercise dashboard sign-in before cutover — this needs a second redirect
+  URI, so it is a deliberate opt-in rather than a free step. See
+  [order of operations](#optional-validate-dashboard-sign-in-before-cutover)
 - Rehearsal `pg_dump` / `pg_restore` to size the real one and shake out auth and
   firewall problems while nothing is frozen
 - Optionally drop the CNAME TTLs from 300s to 60s to bound rollback time
@@ -536,8 +581,9 @@ anything in that file.
 
 ## Decisions
 
-1. ~~Who hosts DNS?~~ **AWS Route 53.** Records are scriptable via the AWS CLI (already
-   installed, needs authenticating) and are at 300s TTL, so no lead time is required.
+1. ~~Who hosts DNS?~~ **AWS Route 53**, zone `Z008615911AMS7RX4EF3I`. The AWS CLI is
+   installed and authenticated, and records are at 300s TTL, so no lead time is
+   required.
 2. ~~Zero-downtime or a brief TLS window?~~ **Accept the window, use managed
    certificates.** Downtime during the migration is acceptable.
 3. ~~Write-freeze strategy?~~ **Freeze**: scale both APIs to zero for the dump/restore.
