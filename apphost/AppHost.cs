@@ -1,6 +1,7 @@
 using Azure.Provisioning;
 using Azure.Provisioning.AppContainers;
 using Azure.Provisioning.Expressions;
+using Azure.Provisioning.Resources;
 using Microsoft.Extensions.Hosting;
 
 var builder = DistributedApplication.CreateBuilder(args);
@@ -91,6 +92,12 @@ if (includeDashboard)
         var dashboardEntraClientId = builder.AddParameter("dashboardEntraClientId");
         var dashboardEntraTenantId = builder.AddParameter("dashboardEntraTenantId");
 
+        // Key Vault secret URIs, both produced by Terraform (infra/terraform).
+        // These are URIs, not secret values -- the values are resolved at runtime by
+        // the Container App's managed identity, so they are safe in appsettings.
+        var dashboardClientSecretUri = builder.AddParameter("dashboardClientSecretKeyVaultUri");
+        var dashboardTokenStoreSasUri = builder.AddParameter("dashboardTokenStoreSasKeyVaultUri");
+
         encouragementApi.WithEnvironment("Dashboard__Origin", dashboardOrigin);
         contactsApi.WithEnvironment("Dashboard__Origin", dashboardOrigin);
 
@@ -106,10 +113,54 @@ if (includeDashboard)
 
                 var clientId = dashboardEntraClientId.AsProvisioningParameter(infrastructure);
                 var tenantId = dashboardEntraTenantId.AsProvisioningParameter(infrastructure);
+                var clientSecretUri = dashboardClientSecretUri.AsProvisioningParameter(infrastructure);
+                var tokenStoreSasUri = dashboardTokenStoreSasUri.AsProvisioningParameter(infrastructure);
 
-                // Easy Auth: every request must be signed in with Entra ID. No client secret is
-                // configured, so sign-in uses the ID token flow. Who may sign in is controlled by
-                // "Assignment required" on the app registration's Enterprise Application.
+                const string clientSecretName = "aad-client-secret";
+                const string tokenStoreSasName = "tokenstore-sas";
+
+                // Easy Auth resolves both Key Vault references through the app's own
+                // identity, so it needs a system-assigned one. Add it rather than replace:
+                // Aspire attaches a user-assigned identity for ACR image pull, and
+                // clobbering that breaks the deploy's ability to pull the image.
+                app.Identity ??= new ManagedServiceIdentity();
+                app.Identity.ManagedServiceIdentityType =
+                    app.Identity.UserAssignedIdentities.Count > 0
+                        ? ManagedServiceIdentityType.SystemAssignedUserAssigned
+                        : ManagedServiceIdentityType.SystemAssigned;
+
+                // Both secrets are Key Vault references, not literals: Terraform writes the
+                // values into the vault and nothing sensitive passes through Bicep, azd
+                // parameters, or CI logs. The URIs are versionless, so a Terraform-driven
+                // rotation is picked up without redeploying the app.
+                app.Configuration.Secrets.Add(new ContainerAppWritableSecret
+                {
+                    Name = clientSecretName,
+                    KeyVaultUri = clientSecretUri,
+                    Identity = "system",
+                });
+
+                app.Configuration.Secrets.Add(new ContainerAppWritableSecret
+                {
+                    Name = tokenStoreSasName,
+                    KeyVaultUri = tokenStoreSasUri,
+                    Identity = "system",
+                });
+
+                // Easy Auth: every request must be signed in with Entra ID. Who may sign in
+                // is controlled by "Assignment required" on the app registration's Enterprise
+                // Application plus its explicit app role assignments, both managed in
+                // infra/terraform/entra.
+                //
+                // All four of the following are required together, and each one alone fails
+                // differently -- see docs/plans/entra-auth-as-code.md:
+                //   1. a client secret, so Easy Auth can do a confidential-client code exchange
+                //   2. the redirect URI on the app registration's `web` platform (not `spa`),
+                //      or the exchange fails with AADSTS9002325 for want of PKCE
+                //   3. implicit ID token issuance enabled, or sign-in fails with AADSTS700054
+                //   4. an enabled, blob-backed token store -- without it sign-in succeeds and
+                //      /.auth/me still 404s, which presents as a login redirect loop
+                // Items 2 and 3 live in Terraform; 1 and 4 are below.
                 infrastructure.Add(new ContainerAppAuthConfig("dashboardAuth")
                 {
                     Parent = app,
@@ -128,12 +179,21 @@ if (includeDashboard)
                             Registration = new ContainerAppAzureActiveDirectoryRegistrationConfiguration
                             {
                                 ClientId = clientId,
+                                ClientSecretSettingName = clientSecretName,
                                 OpenIdIssuer = BicepFunction.Interpolate($"https://login.microsoftonline.com/{tenantId}/v2.0"),
                             },
                             Validation = new ContainerAppAzureActiveDirectoryValidationConfiguration
                             {
                                 AllowedAudiences = { clientId },
                             },
+                        },
+                    },
+                    Login = new ContainerAppLogin
+                    {
+                        TokenStore = new ContainerAppTokenStore
+                        {
+                            IsEnabled = true,
+                            AzureBlobStorageSasUrlSettingName = tokenStoreSasName,
                         },
                     },
                 });
