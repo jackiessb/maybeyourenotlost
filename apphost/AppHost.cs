@@ -1,6 +1,7 @@
 using Azure.Provisioning;
 using Azure.Provisioning.AppContainers;
 using Azure.Provisioning.Expressions;
+using Azure.Provisioning.PostgreSql;
 using Azure.Provisioning.Resources;
 using Microsoft.Extensions.Hosting;
 
@@ -10,7 +11,21 @@ var builder = DistributedApplication.CreateBuilder(args);
 builder.AddAzureContainerAppEnvironment("cae").WithAzdResourceNaming();
 
 var postgres = builder.AddAzurePostgresFlexibleServer("postgres")
-    .RunAsContainer(container => container.WithPgAdmin());
+    .RunAsContainer(container => container.WithPgAdmin())
+    .ConfigureInfrastructure(infrastructure =>
+    {
+        // Aspire pins the server to availability zone "1" by default. Zone numbers are
+        // logical per subscription -- zone "1" in one subscription is not the same
+        // physical zone as in another, and capacity differs -- so a pinned zone does not
+        // survive a move between subscriptions. It surfaces as `SkuNotAvailable` on an
+        // SKU the region genuinely offers, which sends you looking at the wrong thing.
+        // Empty means "let Azure choose".
+        var server = infrastructure.GetProvisionableResources()
+            .OfType<PostgreSqlFlexibleServer>()
+            .Single();
+
+        server.AvailabilityZone = "";
+    });
 
 var encouragementDb = postgres.AddDatabase("encouragement");
 var contactsDb = postgres.AddDatabase("contacts");
