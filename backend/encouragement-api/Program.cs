@@ -21,7 +21,11 @@ builder.AddAzureNpgsqlDbContext<EncouragementDbContext>("encouragement",
 builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>
-        policy.WithOrigins(builder.Configuration["Frontend:Origin"] ?? "http://localhost:5173")
+        policy.WithOrigins(new[]
+            {
+                builder.Configuration["Frontend:Origin"] ?? "http://localhost:5173",
+                builder.Configuration["Dashboard:Origin"]
+            }.OfType<string>().ToArray())
             .AllowAnyHeader()
             .AllowAnyMethod());
 });
@@ -69,6 +73,52 @@ app.MapPost("/encouragements", async (CreateEncouragementRequest request, Encour
     return Results.Created($"/encouragements/{encouragement.Id}", encouragement);
 });
 
+// Admin routes are only reachable through the dashboard's reverse proxy, which sits behind
+// Container Apps Easy Auth. The public frontend only forwards /encouragements/**, never /admin/**.
+var admin = app.MapGroup("/admin/encouragements");
+
+if (!app.Environment.IsDevelopment())
+{
+    // Easy Auth strips any client-supplied copy of this header and injects the signed-in user's.
+    admin.AddEndpointFilter(async (context, next) =>
+        string.IsNullOrEmpty(context.HttpContext.Request.Headers["X-MS-CLIENT-PRINCIPAL-ID"])
+            ? Results.Unauthorized()
+            : await next(context));
+}
+
+admin.MapGet("/", async (EncouragementDbContext db) =>
+    Results.Ok(await db.Encouragements.OrderBy(e => e.Id).ToListAsync()));
+
+admin.MapPut("/{id:int}", async (int id, UpdateEncouragementRequest request, EncouragementDbContext db) =>
+{
+    if (string.IsNullOrWhiteSpace(request.Text))
+    {
+        return Results.ValidationProblem(new Dictionary<string, string[]>
+        {
+            ["text"] = ["Text is required."]
+        });
+    }
+
+    var encouragement = await db.Encouragements.FindAsync(id);
+    if (encouragement is null)
+    {
+        return Results.NotFound();
+    }
+
+    encouragement.Text = request.Text.Trim();
+    await db.SaveChangesAsync();
+
+    return Results.Ok(encouragement);
+});
+
+admin.MapDelete("/{id:int}", async (int id, EncouragementDbContext db) =>
+{
+    var deleted = await db.Encouragements.Where(e => e.Id == id).ExecuteDeleteAsync();
+    return deleted > 0 ? Results.NoContent() : Results.NotFound();
+});
+
 app.Run();
 
 public record CreateEncouragementRequest(string Text);
+
+public record UpdateEncouragementRequest(string Text);
