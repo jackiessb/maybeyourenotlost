@@ -14,6 +14,15 @@ someone would have to re-derive all of this from memory or from this document.
 This plan inventories exactly what was done by hand, what's already codified, what
 isn't, and what it would take to close the gap.
 
+> **Status (2026-11-11): done and verified in production.** The Entra layer and both
+> secrets are provisioned by Terraform (`infra/terraform`), the dashboard's auth config
+> comes from `AppHost.cs`, and sign-in works against the Microsoft 365 tenant. Live
+> state confirmed: both Container App secrets are Key Vault references resolved by the
+> app's system-assigned identity, the issuer is
+> `https://login.microsoftonline.com/aac88807-.../v2.0`, `tokenStore.enabled` is true,
+> and `/.auth/me` returns the signed-in user. What remains is the subscription
+> migration — see [consolidation](#tenant-and-subscription-consolidation).
+
 ## The working configuration (confirmed end-to-end this session)
 
 After a lot of trial and error, login to the dashboard now works. The final, verified
@@ -474,9 +483,9 @@ resolve secrets before the vault holds them. Only phases 1 and 3 recur.
       module rather than `AppHost.cs`, see [layer 4](#4-azure-resource-layer--mostly-covered-three-gaps)
 - [x] Write the subscription-bootstrap checklist as a script —
       `infra/bootstrap-subscription.sh`
-- [ ] **Verify `app_role_assignment_required` is enforced before repointing the
-      client/tenant IDs** — the access gate is now load-bearing, see
-      [layer 3](#3-dashboard-access-control)
+- [x] Verify `app_role_assignment_required` is enforced — confirmed `true` on the
+      service principal, with one explicit assignment; the access gate described in
+      [layer 3](#3-dashboard-access-control) is real for the first time
 - [x] Confirm the M365 tenant permits app registration + subscription creation with
       adequate roles — Global Admin + Owner on an empty PAYG subscription already
       under the tenant
@@ -488,13 +497,17 @@ resolve secrets before the vault holds them. Only phases 1 and 3 recur.
       `infra/terraform/entra/cicd.tf`
 - [ ] Add diagnostic settings to `AppHost.cs` next to
       `AddAzureContainerAppEnvironment("cae")`
-- [ ] Enable the `azurerm` remote state backend for both Terraform modules (both
-      state files contain a credential in cleartext)
+- [x] Enable the `azurerm` remote state backend for both Terraform modules —
+      `rg-mynl-tfstate/stmynltfstate`, versioning on
 - [ ] Plan the Postgres data migration and the DNS/certificate cutover for the
       subscription move
 - [ ] Delete the dead repository-level `AZURE_*` variables left by
       `azd pipeline config` (the live values are environment secrets; see
       `infra/terraform/README.md`)
-- [ ] **Do not deploy production from this branch until Terraform has run** — the two
-      new `AppHost.cs` parameters are empty placeholders, and an empty `keyVaultUrl`
-      fails provisioning
+- [x] ~~Do not deploy production until Terraform has run~~ — both modules applied,
+      parameters populated, deployed and verified in production
+- [ ] Decommission the hand-made `stmynldashauth` storage account in `rg-dev`, now
+      superseded by the Terraform-owned `stmynltokenstore`
+- [ ] Delete the old app registration `f32123ed` in the Default Directory tenant —
+      **keep it until confidence in the new one has settled**, since it is the
+      rollback path
