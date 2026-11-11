@@ -564,6 +564,32 @@ and removing. Steps 9 and 10 are retained below for the reasoning.
     cannot be Burstable: that tier is unavailable subscription-wide, per
     [decision 7](#decisions).
 
+    **Done.** `rg-dev` in the new subscription holds environment
+    `cae-kfhuarasat3yy` (default domain
+    `orangedesert-d129ea29.eastus2.azurecontainerapps.io`),
+    `postgres-kfhuarasat3yy` on `Standard_D2ds_v5` / GeneralPurpose / zone 3 with the
+    `encouragement` and `contacts` databases, and `frontend`, `encouragement-api` and
+    `contacts-api` all `Healthy`. No dashboard, correctly — `includeDashboard` is
+    production-only. `dev.maybeyourenotlost.com` serves 200 over a valid `dev-cert`,
+    and the dev CI secrets are restored against `rg-dev`.
+
+    **⚠ The stale `dev-b` deployment cache nearly provisioned into the old
+    subscription**, and `--clear-cache` was not enough to stop it — see
+    [the cache finding](#findings-worth-keeping). The first attempt tried to create
+    `rg-dev-b` in `c1a7d305…` and was stopped only by `AuthorizationFailed`; the second
+    reached the *old* environment's ACR (`acrjgbowniw3fqck`) and failed a token
+    exchange against the old tenant. What actually worked was deleting the cache file
+    outright before deploying:
+
+    ```sh
+    rm -f ~/.aspire/deployments/*/dev-b.json
+    ```
+
+    After that the run resolved its own resource token (`kfhuarasat3yy`) and targeted
+    `rg-dev` correctly. The ACR image pushes then took **three runs** to get all three
+    images up, failing a different subset each time — the same transient timeouts as
+    production, and incremental, so re-running is the fix.
+
     Three things from the production build apply here and are easy to forget:
 
     - `dev-cert` must be **created before** the deploy that binds it, and the `dev.`
@@ -572,9 +598,9 @@ and removing. Steps 9 and 10 are retained below for the reasoning.
     - The dev Container App's system-assigned identity needs
       `Key Vault Secrets User` on `kv-mynl` if dev ever gets the dashboard; the
       dashboard is production-only today (`includeDashboard`), so this is likely moot.
-    - Re-add `dev` to `github_environments` with `resource_group = "rg-dev"` and
-      re-apply `entra` once the environment exists, restoring the four dev secrets that
-      step 18's mitigation deleted.
+    - ~~Re-add `dev` to `github_environments`~~ **done** — 5 added, 0 changed, 0
+      destroyed, pointing at `rg-dev`. This is what lets `deploy-dev.yml` succeed, and
+      so what unblocks the step 18 merge.
 22. **⚠ Only now delete the old subscription's resources**, and only after the new stack
     has been verified under real use. Until this step the old environments are the
     rollback target: repointing the CNAMEs back is the entire recovery procedure.
@@ -931,14 +957,50 @@ the investigation:
   which is also why an unrelated *code* change in the same publish took effect
   immediately: code is not cached, parameters are. A compile-time `const bool` works
   because it sidesteps configuration entirely.
-- **That cache is a hazard in its own right during a migration.** It held the old
-  subscription's `kv-mynl-platform` Key Vault URIs and placeholder client/tenant GUIDs,
-  so a deploy that trusted it would have pointed the dashboard at a vault its managed
-  identity cannot read — the exact constraint this migration is ordered around. Inspect
-  it before any cross-subscription deploy, and `aspire deploy --clear-cache` to discard
-  it so the values come from `appsettings` again. Note `--clear-cache` also discards the
-  cached `Azure:SubscriptionId` / `Azure:ResourceGroup`, so that run prompts for the
-  target interactively; the run after it re-caches the corrected values.
+- **That cache is a hazard in its own right during a migration, and it beats every
+  other input — including explicit environment variables.** It stores the deploy
+  *target* as well as the parameters: `Azure:SubscriptionId`, `Azure:ResourceGroup`,
+  `Azure:TenantId`, `Azure:Location`. Passing `Azure__SubscriptionId` /
+  `Azure__ResourceGroup` on the command line does **not** override a cached value — the
+  cache wins silently.
+
+  This nearly caused real damage at step 21. The `dev-b` cache still held the **old**
+  subscription, `rg-dev-b` and the **old** tenant, so `aspire deploy -e dev-b` with
+  `Azure__ResourceGroup=rg-dev` and the new subscription set on every variable tried to
+  create `rg-dev-b` **in the subscription being decommissioned**. It was stopped only by
+  `AuthorizationFailed`, because the new-tenant credential has no rights there — not by
+  anything in the configuration. With rights on both subscriptions it would have
+  quietly built a second dev stack in the old one.
+
+  It also held the old `kv-mynl-platform` Key Vault URIs and placeholder client/tenant
+  GUIDs for `production`, which would have pointed the dashboard at a vault its managed
+  identity cannot read — the exact constraint this migration is ordered around.
+
+  **So: inspect the cache before any cross-subscription deploy**, and treat one cache
+  file per Aspire environment:
+
+  ```sh
+  for f in ~/.aspire/deployments/*/*.json; do echo "$f"; grep -E '"Azure:(SubscriptionId|ResourceGroup|TenantId)"' "$f"; done
+  ```
+
+  `aspire deploy --clear-cache` discards that environment's file — target included — so
+  the target must then come from the command line or a prompt, and the parameters fall
+  back to `appsettings`. The run after it re-caches the corrected values.
+
+  **But `--clear-cache` is not sufficient on its own.** With it, the step 21 dev deploy
+  did pick up the right subscription and created `rg-dev` there — and then still
+  resolved the *old* environment's ACR (`acrjgbowniw3fqck`), failing its token exchange
+  because that registry lives in the old tenant. Deleting the file is what actually
+  worked:
+
+  ```sh
+  rm -f ~/.aspire/deployments/*/<environment>.json
+  ```
+
+  Why residual state survived the flag was not established, so **delete the file rather
+  than relying on `--clear-cache` for a cross-subscription move.** Note resource tokens
+  are per-environment and not derived from the subscription alone: the rebuilt dev
+  environment minted its own (`kfhuarasat3yy`) rather than colliding with the old one.
 - **The dashboard's vault grant cannot precede its first deploy.** `kv-mynl` is
   RBAC-only and the app's system-assigned principal does not exist until the Container
   App does, so the `Key Vault Secrets User` role has to be granted between two deploys.
