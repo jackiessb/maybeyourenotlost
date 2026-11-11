@@ -1,17 +1,20 @@
 # Plan: Migrating to the Microsoft 365 Tenant's Subscription
 
-> **Status (2026-11-11).** Phases 1-4 complete. The full stack is up and verified in
-> `Subscription 1` / `rg-prod`: Postgres `Ready` on GeneralPurpose `Standard_D2ds_v5`
-> with both APIs connected by managed identity and their schemas migrated, all four
-> container apps `Healthy`, and the dashboard enforcing Easy Auth against tenant
-> `aac88807…`. Nothing is bound to a custom domain yet, by design.
+> **Status (2026-11-11). Phases 1-4 complete — ready for the Phase 5 cutover.** The
+> full stack is up and verified in `Subscription 1` / `rg-prod`: Postgres `Ready` on
+> GeneralPurpose `Standard_D2ds_v5` with both APIs connected by managed identity and
+> their schemas migrated, all four container apps `Healthy`, and the dashboard
+> enforcing Easy Auth against tenant `aac88807…`. Nothing is bound to a custom domain
+> yet, by design.
 >
-> **The next actions are the two remaining Phase 4 items** — the `pg_dump` / `pg_restore`
-> rehearsal (step 8) and, optionally, early sign-in validation (step 9) — and then
-> Phase 5's cutover. See
-> [Phase 4](#phase-4--deploy-the-application-stack-without-custom-domains). The live
-> site and dashboard are unaffected and still served entirely from the old
-> subscription.
+> The dump/restore is rehearsed end to end and repeatable, with `Encouragements` 659
+> and `Contacts` 371 matching on both servers; the rehearsal's grants and firewall
+> rules have been cleaned up. Early sign-in validation is **deliberately skipped** —
+> sign-in is tested after cutover.
+>
+> **The next action is step 11: the cutover.** It is the first user-visible step and the
+> first that is not freely reversible. The live site and dashboard are still served
+> entirely from the old subscription until then.
 >
 > **The working tree now holds only discardable edits** — the Postgres work is committed
 > (`09c5e8e`, `deb5ebf`), so the earlier "stage selectively or lose it" hazard is gone.
@@ -315,7 +318,12 @@ Phases 1-3 are done. Steps marked **⚠** must not be reordered — the note say
 8. Rehearse `pg_dump` / `pg_restore` while nothing is frozen, to size the real run and
    shake out authentication and firewall problems.
 
-### Optional: validate dashboard sign-in before cutover
+### Optional: validate dashboard sign-in before cutover — ~~skipped~~
+
+**Decided: skip it.** Sign-in is tested after cutover instead. Everything up to the
+final leg of the OAuth exchange is already verified on the new environment, downtime is
+acceptable, and rollback is a DNS flip — so the second redirect URI is not worth adding
+and removing. Steps 9 and 10 are retained below for the reasoning.
 
 9. Sign-in cannot be exercised on the new environment's default hostname as-is: the only
    registered redirect URI is `https://dash.maybeyourenotlost.com/.auth/login/aad/callback`,
@@ -680,8 +688,12 @@ running, so only its auth config is outstanding.
   first — but it is why `verify` matching is not by itself proof the *final* restore
   ran; re-run it after the real one.
 
-  **Still to do before the real run:** `cleanup`, to revoke the two Entra admin grants
-  and the firewall rules. They are live on **production** until then.
+  ~~**Still to do before the real run:** `cleanup`~~ **done** — both Entra admin grants
+  and all rehearsal firewall rules revoked, verified on both servers. Production is
+  back to its pre-rehearsal state: the old server holds only its three managed
+  identities and its original three firewall rules, the new server only its two
+  identities and `AllowAllAzureIps`. `prereqs` has to be run again for the real
+  cutover.
 - Optionally drop the CNAME TTLs from 300s to 60s to bound rollback time
 
 ### Phase 5 — Cutover
