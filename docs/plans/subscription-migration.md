@@ -209,26 +209,41 @@ real cutover.
 - **Managed identity grants on the new server** are handled by `aspire deploy`, which
   emits the `*-roles-postgres` modules — no manual grant needed.
 
-**Decided: freeze writes.** Since downtime is acceptable, scale `encouragement-api` and
-`contacts-api` to zero replicas for the duration of the final dump and restore. This is
+**Decided: freeze writes** for the duration of the final dump and restore. This is
 strictly better than doing the cutover quickly and hoping — honest downtime instead of
 silently losing a submission that lands in the gap.
 
+**⚠ Scaling to zero replicas does not work.** `az containerapp update
+--max-replicas 0` is rejected outright:
+
+> `--max-replicas must be in the range [1,1000]`
+
+and `--min-replicas 0` alone is not a freeze — HTTP scaling just starts a replica on
+the next request. **Deactivate the active revision instead**, which stops the app:
+
 ```sh
 OLD=c1a7d305-fc17-4bba-a6a9-bcb3cad99751
-az containerapp update --subscription $OLD -g rg-dev -n encouragement-api \
-  --min-replicas 0 --max-replicas 0
-az containerapp update --subscription $OLD -g rg-dev -n contacts-api \
-  --min-replicas 0 --max-replicas 0
+for app in encouragement-api contacts-api; do
+  rev=$(az containerapp revision list --subscription $OLD -g rg-dev -n "$app" \
+          --query "[?properties.active].name" -o tsv)
+  az containerapp revision deactivate --subscription $OLD -g rg-dev -n "$app" \
+    --revision "$rev"
+done
 ```
 
 `--subscription` is explicit because these target the **old** subscription while the CLI
 will usually be pointed at the new one, and `rg-dev` holds production until the resource
 groups are renamed.
 
-Note these replica counts are also set in `AppHost.cs` (`MinReplicas = 1`,
-`MaxReplicas = 3`), so the next `aspire deploy` restores them — no need to undo the
-freeze by hand, but also don't expect it to persist across a deploy.
+Deactivation is reversible with `az containerapp revision activate`, and the next
+`aspire deploy` creates a fresh active revision regardless — so the freeze undoes
+itself, but do not expect it to persist across a deploy either. The replica counts in
+`AppHost.cs` (`MinReplicas = 1`, `MaxReplicas = 3`) are likewise reapplied by any
+deploy.
+
+**Verify the freeze by querying state, not by exit code.** Both the `az` failure above
+and an earlier `aspire deploy` returned success-looking output while having changed
+nothing; re-read `properties.active` to confirm.
 
 Still worth doing a **rehearsal dump and restore** in Phase 4 while everything is still
 live, to size the real one and shake out authentication and firewall problems before
@@ -342,8 +357,10 @@ and removing. Steps 9 and 10 are retained below for the reasoning.
 
 ### Phase 5 — cutover
 
-11. Freeze writes: scale `encouragement-api` and `contacts-api` to zero replicas **in the
-   old subscription**.
+11. Freeze writes by **deactivating the active revision** of `encouragement-api` and
+    `contacts-api` **in the old subscription** — not by scaling to zero, which Azure
+    rejects. See [the write window](#postgres-data-and-the-write-window) for the command
+    and why. Confirm by re-reading `properties.active`.
 12. Final `pg_dump` of `encouragement` and `contacts`; restore into the new server.
 
     **⚠ The target databases are no longer empty.** Both APIs applied their EF Core
