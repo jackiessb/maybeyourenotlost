@@ -1,14 +1,16 @@
 # Plan: Migrating to the Microsoft 365 Tenant's Subscription
 
-> **Status (2026-11-11).** Phases 1-3 complete. Phase 4 is partially up and resuming:
-> the Postgres SKU blocker is **decided — move to GeneralPurpose** — and the change is
-> not yet implemented. See
+> **Status (2026-11-11).** Phases 1-3 complete. Phase 4 is resuming: the Postgres SKU
+> blocker is **resolved, implemented and committed** — GeneralPurpose
+> `Standard_D2ds_v5`, verified by direct probe to provision in this subscription where
+> Burstable cannot. The next action is **`aspire deploy`** (step 4). See
 > [Phase 4](#phase-4--deploy-the-application-stack-without-custom-domains). The live
 > site and dashboard are unaffected and still served entirely from the old
 > subscription.
 >
-> **Two uncommitted working-tree edits exist and must not be committed as-is** — see
-> [Uncommitted state](#uncommitted-state).
+> **The working tree now holds only discardable edits** — the Postgres work is committed
+> (`09c5e8e`, `deb5ebf`), so the earlier "stage selectively or lose it" hazard is gone.
+> See [Uncommitted state](#uncommitted-state).
 
 ## Why and what's already done
 
@@ -127,8 +129,19 @@ so this is an `UPSERT` carrying both values, not a second record:
   "ResourceRecords":[{"Value":"\"<OLD_ID>\""},{"Value":"\"<NEW_ID>\""}]}}]}
 ```
 
-The cutover itself is an `UPSERT` of the three CNAMEs to the new environments' default
-domains. Apply with:
+The cutover itself is an `UPSERT` of the CNAMEs to the new environments' default
+domains. For Phase 5 that is **two** records, not three — `dev.` waits for step 19:
+
+| Record | Cutover target | Rollback target |
+| --- | --- | --- |
+| `love.` | `frontend.proudcoast-d2445cec.eastus2.azurecontainerapps.io` | `frontend.blackmushroom-9b33cee3.…` |
+| `dash.` | `dashboard.proudcoast-d2445cec.eastus2.azurecontainerapps.io` | `dashboard.blackmushroom-9b33cee3.…` |
+
+Note the per-app prefix: the record points at `<container app name>.<env default
+domain>`, so `dash.` targets `dashboard.…` and not `dash.…`. Write the rollback batch
+at the same time as the cutover batch — recovery is a single `UPSERT` back to the old
+environment, and it is much better to have the file ready than to compose it under
+pressure. Apply either with:
 
 ```sh
 aws route53 change-resource-record-sets --hosted-zone-id "$ZONE" \
@@ -216,13 +229,13 @@ Phases 1-3 are done. Steps marked **⚠** must not be reordered — the note say
 
 ### Resume Phase 4
 
-1. Add the GeneralPurpose `Sku` override to the Postgres `ConfigureInfrastructure`
-   callback in `AppHost.cs`, next to the existing `AvailabilityZone` override.
-2. **⚠ Commit the Postgres changes on their own, before discarding anything else in
-   `AppHost.cs`.** Stage selectively — that file also carries the temporary
-   `const bool bind*Domain = false` flags, which must not ship. The Postgres override
-   exists *only* in the working tree, so a careless `git checkout` on this file destroys
-   it. See [Uncommitted state](#uncommitted-state).
+1. ~~Add the GeneralPurpose `Sku` override to the Postgres `ConfigureInfrastructure`
+   callback in `AppHost.cs`.~~ **Done** — `deb5ebf`.
+2. ~~**⚠ Commit the Postgres changes on their own**, staging selectively so the temporary
+   `const bool bind*Domain = false` flags do not ship.~~ **Done** — the availability-zone
+   override is `09c5e8e` and the SKU override is `deb5ebf`, neither carrying the flags.
+   The override no longer exists only in the working tree, so `git checkout` on
+   `AppHost.cs` is now safe.
 3. Leave the temporary flags and the emptied `appsettings.production.json` in place —
    both are still needed for the next step.
 4. `aspire deploy` into `Subscription 1` / `rg-prod`. Expect Postgres and the four
@@ -421,8 +434,8 @@ subscription. Chosen over the alternatives (a different region, which would move
 whole stack for a cheaper SKU; or requesting Burstable quota through support and
 waiting).
 
-Not yet implemented. The change goes alongside the availability-zone override already in
-`AppHost.cs`, on the same `ConfigureInfrastructure` callback:
+**Implemented and committed** (`deb5ebf`), alongside the availability-zone override on
+the same `ConfigureInfrastructure` callback:
 
 ```csharp
 server.Sku = new PostgreSqlFlexibleServerSku
@@ -432,15 +445,29 @@ server.Sku = new PostgreSqlFlexibleServerSku
 };
 ```
 
-Two consequences worth deciding on separately:
+**How this was established.** Three throwaway servers were created directly in
+`rg-prod` and deleted immediately — `Standard_B1ms`, `Standard_B2s` and
+`Standard_D2ds_v5`. Both Burstable sizes failed with `SkuNotAvailable`; the
+GeneralPurpose server reached `Ready` (v16, zone 3). This probe is the only trustworthy
+signal available, since the capability API reports every Burstable size as unrestricted,
+including the two that demonstrably fail. It costs cents and a few minutes, and is worth
+repeating rather than inferring whenever an SKU question comes up.
 
-- **Cost.** GeneralPurpose is substantially more expensive than `Standard_B1ms` —
-  materially so at this project's scale. Check current pricing before committing; do not
-  rely on a figure quoted here.
-- **The dev environment.** If Burstable is unavailable subscription-wide rather than just
-  for this server, the rebuilt dev environment needs GeneralPurpose too, doubling that
-  cost for an environment with no production traffic. Worth testing Burstable in dev
-  explicitly, and considering whether dev needs its own server at all.
+Two consequences, both now settled by that probe:
+
+- **Cost.** Retail pricing in `eastus2`, read from the Azure retail prices API on
+  2026-11-11: `Standard_B1ms` **$0.0170/hr** (~$12/mo) against `Standard_D2ds_v5`
+  **$0.1780/hr** (~$130/mo) — a **10.5x** increase, roughly **+$118/mo per server**.
+  There is no cheaper way to buy 2 GeneralPurpose vCores: every current series
+  (`Ddsv5`, `Dadsv5`, `Dsv6`, `Ddsv4`) prices at $0.0890/vCore, and the older `Dsv3` at
+  $0.0855 saves under 4%. Accepted deliberately.
+- **The dev environment.** Now answered, and unfavourably: Burstable is restricted
+  **tier-wide**, not per-server — `Standard_B2s` fails exactly as `Standard_B1ms` does.
+  So a rebuilt dev environment with its own server needs GeneralPurpose too, taking the
+  pair to **~$260/mo** for one environment that carries no production traffic. This
+  makes the open question in [decision 7](#decisions) sharper rather than softer: decide
+  at step 19 whether dev needs its own server at all, or can share the production server
+  with separate databases.
 
 One upside: the 50-connection ceiling on `Standard_B1ms` that the current replica limits
 were sized around disappears — a 2-vCore GeneralPurpose server allows far more. The
@@ -464,14 +491,23 @@ Untested since, because the second deploy never got past Postgres. May be transi
 
 **Still to do in this phase:**
 
-- Implement the GeneralPurpose SKU override and get a server provisioned
+- ~~Implement the GeneralPurpose SKU override~~ **done** (`deb5ebf`); still need a
+  server actually provisioned by `aspire deploy` rather than by probe
 - Get the container apps deployed (retry the ACR pushes)
-- Verify the stack over the default `*.azurecontainerapps.io` hostnames
+- Verify the stack over the default `*.azurecontainerapps.io` hostnames —
+  `proudcoast-d2445cec.eastus2.azurecontainerapps.io`
 - Optionally exercise dashboard sign-in before cutover — this needs a second redirect
   URI, so it is a deliberate opt-in rather than a free step. See
   [order of operations](#optional-validate-dashboard-sign-in-before-cutover)
 - Rehearsal `pg_dump` / `pg_restore` to size the real one and shake out auth and
-  firewall problems while nothing is frozen
+  firewall problems while nothing is frozen. Two prerequisites are already known:
+  **no `pg_dump`/`psql` is installed** on this machine (Docker is present, so
+  `postgres:16` in a container is the cleaner route and guarantees a version match),
+  and **this machine's IP is not in either server's firewall allowlist** — the live
+  prod rules cover two older addresses plus `AllowAllAzureIps`. Note also that the old
+  prod server has `passwordAuth` **disabled** and trusts tenant `e22c9007…` only, so
+  the dump must run under an `az` context in that tenant; both logins are already
+  present in the CLI
 - Optionally drop the CNAME TTLs from 300s to 60s to bound rollback time
 
 ### Phase 5 — Cutover
@@ -525,6 +561,16 @@ the investigation:
 - **`SkuNotAvailable` does not mean the region lacks the SKU.** It is also returned for
   subscription-level restrictions and zone capacity, while the region's capability API
   cheerfully lists the SKU as available with `status: null`.
+- **The only trustworthy SKU-availability test is to create a server and delete it.**
+  Neither `az postgres flexible-server list-skus` nor the capability API distinguishes
+  "offered in this region" from "provisionable by this subscription", and both reported
+  the failing Burstable sizes as unrestricted. A throwaway `az postgres flexible-server
+  create ... && delete` answers it definitively in a few minutes for cents, and
+  `SkuNotAvailable` comes back in about two minutes — well before a successful create
+  finishes. Probe several SKUs in parallel; the CLI cleans up the failures itself.
+- **Prefer probing over inferring before committing a cost increase.** The GeneralPurpose
+  move is a 10.5x jump on the project's main cost line, and the evidence for it
+  originally rested on the same API that was wrong about Burstable.
 - **`az keyvault check-name` is unreliable** — it reported a demonstrably-existing vault
   name as available. Use `dig +short <name>.vault.azure.net` instead.
 - **Reading a vault while `az` points at the wrong tenant returns `AKV10032: Invalid
@@ -542,10 +588,11 @@ the investigation:
 
 ## Uncommitted state
 
-Two files differ from `HEAD`. Parts of those diffs are deliberate temporary edits that
-**must not be committed**; other parts are genuine improvements that **should** be. They
-are tangled in the same files, so separate them deliberately rather than staging whole
-files.
+Two files still differ from `HEAD`, and **everything remaining in both is temporary and
+discardable.** The Postgres work that used to be tangled in here is committed
+(`09c5e8e` availability zone, `deb5ebf` GeneralPurpose SKU), so the earlier requirement
+to stage selectively — and the risk that a careless `git checkout` destroyed the only
+copy of the override — no longer applies.
 
 ### `apphost/appsettings.production.json` — discard entirely
 
@@ -557,30 +604,20 @@ live production apps and point them at a vault their managed identity cannot rea
 `git checkout -- apphost/appsettings.production.json` restores it; `HEAD` holds the
 correct live values.
 
-### `apphost/AppHost.cs` — mixed; keep some, discard some
+### `apphost/AppHost.cs` — discard entirely
 
-**Keep** (not yet committed, and worth committing):
+All that remains is the Phase 4 scaffolding:
 
-- `using Azure.Provisioning.PostgreSql;`
-- The `ConfigureInfrastructure` callback on the Postgres resource setting
-  `server.AvailabilityZone = ""`
-- The GeneralPurpose `Sku` override, once added
+- `const bool bindFrontendDomain = false;` / `bindDashboardDomain = false`
+- The two `if (...)` blocks wrapping `app.ConfigureCustomDomain(...)`
 
-**Discard**:
-
-- `const bool bindFrontendDomain = false;` / `bindDashboardDomain = false` and the two
-  `if (...)` blocks wrapping `app.ConfigureCustomDomain(...)`
-
-Note what `HEAD` actually contains: two plain, unconditional `ConfigureCustomDomain`
-calls and **no Postgres configuration at all**. There is no committed conditional form to
-restore to — the config-driven conditional never worked (see
-[findings](#findings-worth-keeping)) and was never committed. Restoring means returning
-those two call sites to their unconditional form, not reinstating a conditional.
-
-A scratchpad copy of both files exists but is session-local and will not survive. `HEAD`
-is the real recovery path for `appsettings.production.json`; the Postgres override in
-`AppHost.cs` exists **only in the working tree**, so commit it before discarding
-anything in that file.
+`HEAD` now contains the full Postgres configuration *and* two plain, unconditional
+`ConfigureCustomDomain` calls — so at step 12 `git checkout -- apphost/AppHost.cs` is the
+whole restoration, and it is safe. There is no committed conditional form to return to:
+the config-driven conditional never worked (see
+[findings](#findings-worth-keeping)) and was never committed. Do **not** simply flip the
+constants to `true` — that leaves conditional scaffolding behind for a condition that
+never varies.
 
 ## Decisions
 
@@ -600,9 +637,14 @@ anything in that file.
 6. ~~Resource group naming~~ **Corrected to `rg-prod` / `rg-dev` during the migration** —
    see [resource group naming](#resource-group-naming).
 7. ~~Postgres SKU, after Burstable proved unavailable in the target subscription~~
-   **GeneralPurpose `Standard_D2ds_v5`.** See
-   [Phase 4](#phase-4--deploy-the-application-stack-without-custom-domains); the dev
-   environment's SKU and the revisited replica limits remain open sub-questions.
+   **GeneralPurpose `Standard_D2ds_v5`**, implemented in `deb5ebf` and confirmed by
+   probe: both `Standard_B1ms` and `Standard_B2s` fail with `SkuNotAvailable` while
+   `Standard_D2ds_v5` reaches `Ready`. Burstable is therefore restricted **tier-wide**
+   in this subscription. ~~The dev environment's SKU~~ follows from that — it cannot be
+   Burstable either — which leaves the real sub-question as **whether dev needs its own
+   server at all** at ~$130/mo, or should share production's with separate databases.
+   The revisited replica limits remain open. See
+   [Phase 4](#phase-4--deploy-the-application-stack-without-custom-domains).
 
 ## Rollback
 
