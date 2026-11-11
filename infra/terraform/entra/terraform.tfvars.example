@@ -1,0 +1,33 @@
+# Copy to terraform.tfvars (gitignored) and fill in.
+
+# Tenant that owns the Microsoft 365 instance.
+entra_tenant_id = "aac88807-ec5d-4c7a-8379-0f2baf8123e0"
+
+dashboard_hostname = "dash.maybeyourenotlost.com"
+
+# The access gate. Every UPN here can sign in to the admin dashboard.
+dashboard_user_upns = [
+  "jackson@maybeyourenotlost.com",
+]
+
+# From `terraform -chdir=../platform output -raw key_vault_id`.
+key_vault_id              = "/subscriptions/20aad6af-afbd-4c72-a48d-59ae01ca2cb2/resourceGroups/rg-mynl-platform/providers/Microsoft.KeyVault/vaults/kv-mynl-platform"
+key_vault_tenant_id       = "aac88807-ec5d-4c7a-8379-0f2baf8123e0"
+key_vault_subscription_id = "20aad6af-afbd-4c72-a48d-59ae01ca2cb2"
+
+# --- CI/CD (GitHub Actions OIDC) -----------------------------------------
+# Requires GITHUB_TOKEN with the `repo` scope. Leave false to skip entirely.
+manage_github_actions = false
+
+# github_owner      = "jackiessb"
+# github_repository = "maybeyourenotlost"
+
+# Written to each GitHub environment as AZURE_SUBSCRIPTION_ID.
+# cicd_subscription_id = "20aad6af-afbd-4c72-a48d-59ae01ca2cb2"
+
+# Note the naming inversion from docs/environment.md: GitHub `production`
+# deploys to the Azure resource group `rg-dev`, GitHub `dev` to `rg-dev-b`.
+# github_environments = {
+#   production = { resource_group = "rg-dev" }
+#   dev        = { resource_group = "rg-dev-b" }
+# }

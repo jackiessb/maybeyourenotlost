@@ -1,0 +1,26 @@
+# Copy to terraform.tfvars (gitignored) and fill in.
+
+# Tenant that owns the Microsoft 365 instance, and the empty pay-as-you-go
+# subscription already provisioned under it ("Subscription 1"). To stage the move
+# instead, point these at the old personal subscription
+# (tenant e22c9007-0f6b-44b6-a403-af91c309278d,
+#  subscription c1a7d305-fc17-4bba-a6a9-bcb3cad99751).
+tenant_id       = "aac88807-ec5d-4c7a-8379-0f2baf8123e0"
+subscription_id = "20aad6af-afbd-4c72-a48d-59ae01ca2cb2"
+
+location = "eastus2"
+
+# Both are globally unique names -- change if taken.
+key_vault_name           = "kv-mynl-platform"
+token_store_account_name = "stmynltokenstore"
+
+# Empty on the first apply. After `aspire deploy` creates the dashboard
+# Container App, fill in its system-assigned identity and re-apply:
+#   az containerapp show -n dashboard -g <azd-rg> \
+#     --query identity.principalId -o tsv
+container_app_principal_ids = []
+
+# From `terraform -chdir=../entra output -raw cicd_principal_id`, once the entra
+# module has been applied with manage_github_actions = true. Grants the CI
+# identity Contributor + User Access Administrator on the subscription.
+cicd_principal_ids = []
