@@ -93,6 +93,34 @@ variable "cicd_application_display_name" {
   default     = "MYNL CI/CD"
 }
 
+variable "github_oidc_subject_prefix" {
+  description = <<-DESC
+    Prefix of the `sub` claim GitHub puts in its OIDC token, which the federated
+    credential's subject must match exactly.
+
+    This repository has **immutable subject claims** enabled, so the prefix carries
+    numeric owner and repository IDs rather than their names
+    (`repo:owner@<ownerId>/repo@<repoId>`). The name-based form that `github_owner` and
+    `github_repository` would produce does not match, and the deploy fails at
+    `azure/login` with:
+
+      AADSTS700213: No matching federated identity record found for presented
+      assertion subject '...'
+
+    Immutable IDs are the point of the setting -- they survive an owner or repository
+    rename, where the name-based form silently stops matching. Read the live value with:
+
+      gh api repos/<owner>/<repo>/actions/oidc/customization/sub
+
+    Committed rather than left in tfvars because owner and repository IDs are public,
+    immutable, and needed for a fresh checkout to produce working credentials. Set to
+    `""` to fall back to the name-based form, for a repository without immutable
+    subjects enabled.
+  DESC
+  type        = string
+  default     = "repo:jackiessb@62896868/maybeyourenotlost@1333678914"
+}
+
 variable "github_environments" {
   description = <<-DESC
     GitHub Actions environments that deploy, keyed by environment name, with the

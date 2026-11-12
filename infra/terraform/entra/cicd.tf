@@ -44,7 +44,10 @@ resource "azuread_application_federated_identity_credential" "cicd" {
   display_name   = "github-${var.github_repository}-${each.key}"
   audiences      = ["api://AzureADTokenExchange"]
   issuer         = "https://token.actions.githubusercontent.com"
-  subject        = "repo:${var.github_owner}/${var.github_repository}:environment:${each.key}"
+  # var.github_oidc_subject_prefix carries the immutable, ID-based prefix this
+  # repository's tokens actually use; the name-based form is the fallback for a
+  # repository without immutable subject claims enabled.
+  subject = "${coalesce(var.github_oidc_subject_prefix, "repo:${var.github_owner}/${var.github_repository}")}:environment:${each.key}"
 }
 
 # ---------------------------------------------------------------------------
