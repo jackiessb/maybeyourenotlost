@@ -92,17 +92,3 @@ resource "azurerm_key_vault_secret" "client_secret" {
   # of truth for expiry alerting rather than a calendar reminder.
   expiration_date = azuread_application_password.dashboard.end_date
 }
-
-# Same secret, written into the migration target's vault. Removed in Phase 6 once the
-# old subscription is gone and the target becomes the only vault.
-resource "azurerm_key_vault_secret" "client_secret_target" {
-  count = var.target_key_vault_id == "" ? 0 : 1
-
-  provider = azurerm.target
-
-  name            = var.client_secret_name
-  value           = azuread_application_password.dashboard.value
-  key_vault_id    = var.target_key_vault_id
-  content_type    = "entra-client-secret"
-  expiration_date = azuread_application_password.dashboard.end_date
-}

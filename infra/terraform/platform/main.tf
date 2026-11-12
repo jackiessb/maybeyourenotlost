@@ -144,19 +144,3 @@ resource "azurerm_role_assignment" "cicd" {
   role_definition_name = each.value.role
   principal_id         = each.value.principal_id
 }
-
-resource "azurerm_role_assignment" "secret_writer_secrets_officer" {
-  for_each = toset(var.secret_writer_principal_ids)
-
-  scope                = azurerm_key_vault.platform.id
-  role_definition_name = "Key Vault Secrets Officer"
-  principal_id         = each.value
-}
-
-resource "azurerm_role_assignment" "secret_writer_reader" {
-  for_each = toset(var.secret_writer_principal_ids)
-
-  scope                = azurerm_key_vault.platform.id
-  role_definition_name = "Reader"
-  principal_id         = each.value
-}

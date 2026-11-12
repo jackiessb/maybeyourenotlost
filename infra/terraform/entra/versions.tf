@@ -42,29 +42,19 @@ provider "azuread" {
   tenant_id = var.entra_tenant_id
 }
 
-# Points at wherever the Key Vault lives. During the migration that is the old
-# subscription in the Default Directory tenant; afterwards it is the M365
-# tenant's subscription and these match var.entra_tenant_id.
+# Points at wherever the Key Vault lives. Since the subscription migration completed
+# that is the M365 tenant's subscription, so these now match var.entra_tenant_id.
+#
+# The migration needed a second `azurerm.target` alias here: the primary had to stay
+# pinned to whichever tenant still held the secret, because Terraform must refresh the
+# existing resource there, and repointing the primary would fail on a cross-tenant
+# token before it could even plan. With both vault and app registration in aac88807
+# that no longer applies, so the alias is gone.
 provider "azurerm" {
   features {}
 
   tenant_id       = var.key_vault_tenant_id
   subscription_id = var.key_vault_subscription_id
-}
-
-# Second vault, during the subscription migration. The primary provider stays pinned to
-# whichever tenant currently holds the secret, because Terraform has to refresh the
-# existing resource there -- repointing the primary would fail on a cross-tenant token
-# before it could even plan. Falls back to mirroring the primary when the migration
-# variables are unset, so the alias is always validly configured even though nothing
-# uses it.
-provider "azurerm" {
-  alias = "target"
-
-  features {}
-
-  tenant_id       = var.target_key_vault_tenant_id != "" ? var.target_key_vault_tenant_id : var.key_vault_tenant_id
-  subscription_id = var.target_key_vault_subscription_id != "" ? var.target_key_vault_subscription_id : var.key_vault_subscription_id
 }
 
 # Only used when var.manage_github_actions is true. Authenticates with the

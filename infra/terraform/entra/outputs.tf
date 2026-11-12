@@ -50,10 +50,3 @@ output "cicd_principal_id" {
   description = "CI/CD service principal object ID. Feeds the platform module's cicd_principal_ids variable."
   value       = var.manage_github_actions ? azuread_service_principal.cicd[0].object_id : null
 }
-
-output "client_secret_target_key_vault_uri" {
-  description = "Versionless URI of the client secret in the migration target's vault."
-  value = var.target_key_vault_id == "" ? null : (
-    azurerm_key_vault_secret.client_secret_target[0].versionless_id
-  )
-}
