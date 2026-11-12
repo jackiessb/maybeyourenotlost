@@ -3,25 +3,23 @@ import { createHashRouter, Navigate, RouterProvider } from "react-router";
 import { Toaster } from "./components/ui/toast";
 import { Spinner } from "./components/ui/spinner";
 import { Layout } from "./components/Layout";
-import Contacts from "./pages/Contacts";
 import Encouragements from "./pages/Encouragements";
-import Login from "./pages/Login";
-import { fetchCurrentUser, type User } from "./lib/auth";
+import EncouragementReview from "./pages/EncouragementReview";
+import EncouragementTable from "./pages/EncouragementTable";
+import { Home } from "./pages/Home";
+import { fetchCurrentUser, redirectToLogin, type User } from "./lib/auth";
 
-function createRouter(user: User | null) {
+function createRouter(user: User) {
   // Hash routing so deep links work even if the static host has no SPA fallback.
   return createHashRouter([
     {
-      path: "/login",
-      element: user ? <Navigate to="/contacts" replace /> : <Login />,
-    },
-    {
       path: "/",
-      element: user ? <Layout user={user} /> : <Navigate to="/login" replace />,
+      element: <Layout user={user} />,
       children: [
-        { index: true, element: <Navigate to="/contacts" replace /> },
-        { path: "contacts", element: <Contacts /> },
+        { index: true, element: <Home user={user} /> },
         { path: "encouragements", element: <Encouragements /> },
+        { path: "encouragements/review", element: <EncouragementReview /> },
+        { path: "encouragements/browse", element: <EncouragementTable /> },
       ],
     },
     { path: "*", element: <Navigate to="/" replace /> },
@@ -29,17 +27,20 @@ function createRouter(user: User | null) {
 }
 
 function App() {
-  // undefined = still checking, null = signed out.
-  const [user, setUser] = useState<User | null | undefined>(undefined);
+  // null = still checking. Signed-out visitors are sent straight to Microsoft.
+  const [user, setUser] = useState<User | null>(null);
 
   useEffect(() => {
-    void fetchCurrentUser().then(setUser);
+    void fetchCurrentUser().then((current) => {
+      if (current) {
+        setUser(current);
+      } else {
+        redirectToLogin();
+      }
+    });
   }, []);
 
-  const router = useMemo(
-    () => (user === undefined ? null : createRouter(user)),
-    [user],
-  );
+  const router = useMemo(() => (user ? createRouter(user) : null), [user]);
 
   return (
     <Toaster>

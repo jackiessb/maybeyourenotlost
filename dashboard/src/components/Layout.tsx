@@ -14,13 +14,13 @@ const navLinkClass = ({ isActive }: { isActive: boolean }) =>
 
 export function Layout({ user }: LayoutProps) {
   return (
-    <div className="flex min-h-dvh flex-col">
+    <div className="flex h-dvh flex-col overflow-hidden">
       <header className="border-b">
         <div className="mx-auto flex max-w-5xl flex-wrap items-center gap-4 px-5 py-3">
-          <h1 className="font-semibold">MYNL Dashboard</h1>
+          <h1 className="font-semibold">Maybe You're Not Lost</h1>
           <nav className="flex gap-1">
-            <NavLink to="/contacts" className={navLinkClass}>
-              Contacts
+            <NavLink to="/" end className={navLinkClass}>
+              Home
             </NavLink>
             <NavLink to="/encouragements" className={navLinkClass}>
               Encouragements
@@ -37,8 +37,12 @@ export function Layout({ user }: LayoutProps) {
           </div>
         </div>
       </header>
-      <main className="mx-auto w-full max-w-5xl flex-1 p-5">
-        <Outlet />
+      <main className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
+        <div className="mx-auto h-full w-full max-w-5xl p-5">
+          <section className="flex h-full flex-col gap-4">
+            <Outlet />
+          </section>
+        </div>
       </main>
     </div>
   );

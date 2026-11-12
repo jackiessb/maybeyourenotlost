@@ -1,10 +1,5 @@
 import { redirectToLogin } from "./auth";
 
-export interface Contact {
-  id: number;
-  phoneNumber: string;
-}
-
 export const EncouragementStatus = {
   Waiting: -1,
   Rejected: 0,
@@ -96,17 +91,6 @@ export function getFieldErrors(error: unknown, field: string): string[] {
 export function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Something went wrong.";
 }
-
-export const getContacts = () => request<Contact[]>("/admin/contacts");
-
-export const updateContact = (id: number, phoneNumber: string) =>
-  request<Contact>(`/admin/contacts/${id}`, {
-    method: "PUT",
-    body: JSON.stringify({ phoneNumber }),
-  });
-
-export const deleteContact = (id: number) =>
-  request<void>(`/admin/contacts/${id}`, { method: "DELETE" });
 
 export const getEncouragements = () =>
   request<Encouragement[]>("/admin/encouragements");
