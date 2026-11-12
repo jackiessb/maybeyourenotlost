@@ -28,13 +28,13 @@ variable "resource_group_name" {
 variable "key_vault_name" {
   description = "Key Vault name. Globally unique, 3-24 chars, alphanumerics and hyphens."
   type        = string
-  default     = "kv-mynl-platform"
+  default     = "kv-mynl"
 }
 
 variable "token_store_account_name" {
   description = "Storage account backing the Easy Auth token store. Globally unique, 3-24 lowercase alphanumerics."
   type        = string
-  default     = "stmynltokenstore"
+  default     = "stmynltokens"
 }
 
 variable "token_store_container_name" {

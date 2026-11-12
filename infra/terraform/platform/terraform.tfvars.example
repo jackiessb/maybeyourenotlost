@@ -1,18 +1,18 @@
 # Copy to terraform.tfvars (gitignored) and fill in.
 
-# Tenant that owns the Microsoft 365 instance, and the empty pay-as-you-go
-# subscription already provisioned under it ("Subscription 1"). To stage the move
-# instead, point these at the old personal subscription
-# (tenant e22c9007-0f6b-44b6-a403-af91c309278d,
-#  subscription c1a7d305-fc17-4bba-a6a9-bcb3cad99751).
+# Tenant that owns the Microsoft 365 instance, and the subscription under it
+# ("Subscription 1") that now holds all infrastructure.
 tenant_id       = "aac88807-ec5d-4c7a-8379-0f2baf8123e0"
 subscription_id = "20aad6af-afbd-4c72-a48d-59ae01ca2cb2"
 
 location = "eastus2"
 
-# Both are globally unique names -- change if taken.
-key_vault_name           = "kv-mynl-platform"
-token_store_account_name = "stmynltokenstore"
+# Both are globally unique names -- change if taken. These are the live names; the
+# migration's originals (kv-mynl-platform, stmynltokenstore) are retired, and Key Vault
+# soft delete keeps a deleted vault's name reserved for its retention period, so do not
+# reach for those.
+key_vault_name           = "kv-mynl"
+token_store_account_name = "stmynltokens"
 
 # Empty on the first apply. After `aspire deploy` creates the dashboard
 # Container App, fill in its system-assigned identity and re-apply:
