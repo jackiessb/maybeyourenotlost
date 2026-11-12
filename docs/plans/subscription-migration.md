@@ -545,12 +545,29 @@ and removing. Steps 9 and 10 are retained below for the reasoning.
 
     Pushing the branch alone is safe and triggers nothing: `deploy-dev.yml` has no
     `push` trigger. `MYNL-19` is pushed and current.
-19. Promote the client secret: drop `azurerm_key_vault_secret.client_secret` from the
-    `entra` module and make `client_secret_target` the only one, via `terraform state mv`
-    rather than destroy-and-recreate. Remove the `azurerm.target` alias and the
-    `target_key_vault_*` variables.
-20. Drop `secret_writer_principal_ids` and `EXTRA_STATE_PRINCIPALS` — both existed only
-    while Entra and the infrastructure were in different tenants.
+19. ~~Promote the client secret~~ **Done.** `kv-mynl` is the only vault: the secret
+    written there additively during the migration was moved onto the canonical address,
+    and the `client_secret_target` resource, the `azurerm.target` provider alias, the
+    three `target_key_vault_*` variables and the target output are gone.
+
+    ```sh
+    terraform state rm azurerm_key_vault_secret.client_secret
+    terraform state mv 'azurerm_key_vault_secret.client_secret_target[0]' \
+                       azurerm_key_vault_secret.client_secret
+    ```
+
+    **`state rm`, not destroy** — the old `kv-mynl-platform` secret keeps its value so
+    the old stack stays usable for rollback until step 22; it is orphaned from state,
+    not deleted. The apply was **0 added, 0 changed, 0 destroyed**, only outputs
+    moving, which is the test that it worked: no secret was rewritten and the
+    dashboard's Key Vault reference never changed.
+20. ~~Drop `secret_writer_principal_ids` and `EXTRA_STATE_PRINCIPALS`~~ **Done.** Both
+    existed only while Entra and the infrastructure were in different tenants, where
+    the entra module had to run as an M365-tenant identity that was a B2B guest in the
+    infrastructure tenant — a different object ID with no access of its own. Removed
+    the variable and its two role assignments from `platform`, and the
+    `EXTRA_STATE_PRINCIPALS` loop from `bootstrap-subscription.sh`. **No apply needed**:
+    the list was already empty, so `platform` plans clean.
 21. Rebuild the dev environment in the new subscription (empty, no data migration), then
     repoint the `dev.` CNAME and set its hostname and certificate name in
     `appsettings.dev-b.json`.
