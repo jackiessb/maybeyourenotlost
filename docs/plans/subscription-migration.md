@@ -623,8 +623,31 @@ and removing. Steps 9 and 10 are retained below for the reasoning.
     rollback target: repointing the CNAMEs back is the entire recovery procedure.
 23. Remove the stale verification ID from the `asuid.*` TXT records, and raise the CNAME
     TTLs back to 300s if they were lowered.
+
+    - ~~Stale verification ID~~ **done.** `asuid.love`, `asuid.dash` and `asuid.dev`
+      now carry only `17CFD1AA…B00F`; the old `1174F191…7FD3` is gone. All three
+      hostnames verified still serving on valid certificates afterwards — an existing
+      domain binding is not re-validated against `asuid`, so removing the old value
+      does not disturb it.
+    - **TTLs: still at 60s, deliberately.** Raising them to 300s only slows a
+      rollback, so it waits until step 22 has actually removed the rollback target.
+
 24. Delete the old app registration `f32123ed`, the legacy
     `tfstate/platform-legacy-oldsub.tfstate`, and the `stmynltfstate` state account.
+
+    - ~~App registration~~ **done.** `MYNL Dashboard`
+      `f32123ed-18c2-4740-b4df-c1e78c80aad1` deleted; no app registrations remain in
+      the old tenant. It was safe ahead of step 22 because **both** dashboards already
+      authenticated against `774f2175` in `aac88807` — the old Container App's
+      `authConfig` was checked first and pointed there too, so this registration was
+      dead even for a rollback. Dashboard sign-in verified unaffected after deleting.
+    - **⚠ The two state artifacts wait for step 22**, because one of them is a *tool*
+      for it: `tfstate/platform-legacy-oldsub.tfstate` (in the **new** account
+      `stmynlstate`) is what makes `terraform destroy` of the old platform resources
+      possible, and the plan offers exactly two routes — that, or `az group delete`.
+      `stmynltfstate` likewise still holds the pre-migration `entra.tfstate` and
+      `platform.tfstate` backups. Deleting either first narrows step 22 to the
+      direct-delete route with no Terraform fallback.
 
 ## Phases
 
