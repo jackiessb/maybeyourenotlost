@@ -10,10 +10,24 @@ import {
   getEncouragements,
   getErrorMessage,
   getFieldErrors,
+  setEncouragementStatus,
   updateEncouragement,
+  EncouragementStatus,
   type Encouragement,
 } from "@/lib/api";
 import { useList } from "@/lib/useList";
+
+const STATUS_LABELS: Record<EncouragementStatus, string> = {
+  [EncouragementStatus.Waiting]: "Waiting",
+  [EncouragementStatus.Rejected]: "Rejected",
+  [EncouragementStatus.Approved]: "Approved",
+};
+
+const STATUS_STYLES: Record<EncouragementStatus, string> = {
+  [EncouragementStatus.Waiting]: "bg-muted text-muted-foreground",
+  [EncouragementStatus.Rejected]: "bg-destructive/10 text-destructive",
+  [EncouragementStatus.Approved]: "bg-green-600/10 text-green-700",
+};
 
 function Encouragements() {
   const { items, isLoading, error, reload, replaceItem, removeItem } =
@@ -45,6 +59,28 @@ function Encouragements() {
       setFieldErrors(getFieldErrors(e, "text"));
       toast.add({
         title: "Couldn't update encouragement",
+        description: getErrorMessage(e),
+        type: "error",
+      });
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const handleSetStatus = async (
+    encouragement: Encouragement,
+    status: EncouragementStatus,
+  ) => {
+    setBusyId(encouragement.id);
+    try {
+      replaceItem(await setEncouragementStatus(encouragement.id, status));
+      toast.add({
+        title: `Encouragement ${STATUS_LABELS[status].toLowerCase()}`,
+        type: "success",
+      });
+    } catch (e) {
+      toast.add({
+        title: "Couldn't update status",
         description: getErrorMessage(e),
         type: "error",
       });
@@ -119,6 +155,11 @@ function Encouragements() {
                       </p>
                     )}
                   </div>
+                  <span
+                    className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_STYLES[encouragement.status]}`}
+                  >
+                    {STATUS_LABELS[encouragement.status]}
+                  </span>
                 </div>
                 <div className="flex justify-end gap-2">
                   {isEditing ? (
@@ -142,6 +183,37 @@ function Encouragements() {
                     </>
                   ) : (
                     <>
+                      {encouragement.status !==
+                        EncouragementStatus.Approved && (
+                        <Button
+                          size="sm"
+                          onClick={() =>
+                            handleSetStatus(
+                              encouragement,
+                              EncouragementStatus.Approved,
+                            )
+                          }
+                          disabled={isBusy}
+                        >
+                          Approve
+                        </Button>
+                      )}
+                      {encouragement.status !==
+                        EncouragementStatus.Rejected && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() =>
+                            handleSetStatus(
+                              encouragement,
+                              EncouragementStatus.Rejected,
+                            )
+                          }
+                          disabled={isBusy}
+                        >
+                          Reject
+                        </Button>
+                      )}
                       <Button
                         size="sm"
                         variant="outline"

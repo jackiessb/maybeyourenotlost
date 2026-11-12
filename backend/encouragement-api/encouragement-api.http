@@ -18,3 +18,11 @@ GET {{encouragement_api_HostAddress}}/encouragements/1
 Accept: application/json
 
 ###
+PUT {{encouragement_api_HostAddress}}/admin/encouragements/1/status
+Content-Type: application/json
+
+{
+  "status": 1
+}
+
+###

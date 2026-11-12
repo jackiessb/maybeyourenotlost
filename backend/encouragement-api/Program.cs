@@ -52,7 +52,9 @@ app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
 
 app.MapGet("/encouragements/{id:int}", async (int id, EncouragementDbContext db) =>
 {
-    var encouragement = await db.Encouragements.FindAsync(id);
+    // Only approved encouragements are visible to the public.
+    var encouragement = await db.Encouragements
+        .FirstOrDefaultAsync(e => e.Id == id && e.Status == EncouragementStatus.Approved);
     return encouragement is not null ? Results.Ok(encouragement) : Results.NotFound();
 });
 
@@ -111,6 +113,28 @@ admin.MapPut("/{id:int}", async (int id, UpdateEncouragementRequest request, Enc
     return Results.Ok(encouragement);
 });
 
+admin.MapPut("/{id:int}/status", async (int id, UpdateEncouragementStatusRequest request, EncouragementDbContext db) =>
+{
+    if (!Enum.IsDefined(request.Status))
+    {
+        return Results.ValidationProblem(new Dictionary<string, string[]>
+        {
+            ["status"] = ["Status must be -1 (waiting), 0 (rejected) or 1 (approved)."]
+        });
+    }
+
+    var encouragement = await db.Encouragements.FindAsync(id);
+    if (encouragement is null)
+    {
+        return Results.NotFound();
+    }
+
+    encouragement.Status = request.Status;
+    await db.SaveChangesAsync();
+
+    return Results.Ok(encouragement);
+});
+
 admin.MapDelete("/{id:int}", async (int id, EncouragementDbContext db) =>
 {
     var deleted = await db.Encouragements.Where(e => e.Id == id).ExecuteDeleteAsync();
@@ -122,3 +146,5 @@ app.Run();
 public record CreateEncouragementRequest(string Text);
 
 public record UpdateEncouragementRequest(string Text);
+
+public record UpdateEncouragementStatusRequest(EncouragementStatus Status);

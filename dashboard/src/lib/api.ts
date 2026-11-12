@@ -5,9 +5,19 @@ export interface Contact {
   phoneNumber: string;
 }
 
+export const EncouragementStatus = {
+  Waiting: -1,
+  Rejected: 0,
+  Approved: 1,
+} as const;
+
+export type EncouragementStatus =
+  (typeof EncouragementStatus)[keyof typeof EncouragementStatus];
+
 export interface Encouragement {
   id: number;
   text: string;
+  status: EncouragementStatus;
 }
 
 export class ApiError extends Error {
@@ -105,6 +115,15 @@ export const updateEncouragement = (id: number, text: string) =>
   request<Encouragement>(`/admin/encouragements/${id}`, {
     method: "PUT",
     body: JSON.stringify({ text }),
+  });
+
+export const setEncouragementStatus = (
+  id: number,
+  status: EncouragementStatus,
+) =>
+  request<Encouragement>(`/admin/encouragements/${id}/status`, {
+    method: "PUT",
+    body: JSON.stringify({ status }),
   });
 
 export const deleteEncouragement = (id: number) =>
