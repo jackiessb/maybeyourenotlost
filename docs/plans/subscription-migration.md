@@ -1,35 +1,32 @@
 # Plan: Migrating to the Microsoft 365 Tenant's Subscription
 
-> **Status (2026-11-11). Phases 1-5 complete — the cutover is done and live.**
-> `love.maybeyourenotlost.com` and `dash.maybeyourenotlost.com` are served from
-> `Subscription 1` / `rg-prod`, on valid `love-cert` / `dash-cert` managed
-> certificates. All four container apps are `Healthy` at their intended replica counts,
-> `Encouragements` 659 and `Contacts` 371 match between old and new servers with
-> identity sequences correct, and `dash.` redirects to Entra with the registered
-> redirect URI.
+> **Status (2026-11-12). Phases 1-5 complete; Phase 6 all but finished.** Production
+> and dev both run in `Subscription 1`, CI deploys there, and the cross-tenant
+> migration scaffolding is gone. `love.`, `dash.` and `dev.` all serve on valid
+> deterministic certificates (`love-cert`, `dash-cert`, `dev-cert`).
 >
-> | | |
+> | Step | |
 > | --- | --- |
-> | Writes frozen | 22:00:11Z |
-> | DNS flipped | 22:02:29Z |
-> | TLS window | ~22:02-22:15Z, dominated by certificate issuance (~8 min), not the deploy |
-> | Domains bound, window closed | 22:15:19Z |
+> | 17 CI repointed | done — new identity, both modules applied |
+> | 18 merged to `main` | done — `a8ef363`; CI verified deploying to `rg-prod`, old subscription untouched |
+> | 19 one vault | done — `kv-mynl` only, 0 resources changed |
+> | 20 scaffolding dropped | done — no apply needed |
+> | 21 dev rebuilt | done — `rg-dev`, own GeneralPurpose server |
+> | 23 / 24 partially | stale `asuid` ID removed, old app registration deleted |
 >
-> **Three things are outstanding, in priority order:**
+> **Remaining, in order:**
 >
-> 1. **`./infra/pg-migrate.sh cleanup`** — the cutover's Entra admin grants and
->    firewall rules are still live on **both** Postgres servers.
-> 2. **Rollback is degraded.** The old subscription's `encouragement-api` and
->    `contacts-api` revisions are still deactivated from the write freeze, so
->    repointing DNS back would serve a site with dead APIs until they are reactivated
->    with `az containerapp revision activate`. Decide whether to reactivate them for a
->    genuine rollback path or accept this, now that the new stack is verified.
-> 3. **Phase 6 begins at step 17: repoint CI *before* merging the cutover commit**
->    (`c8c5e75`), which is committed on `MYNL-19` and deliberately unmerged.
->
-> **The working tree now holds only discardable edits** — the Postgres work is committed
-> (`09c5e8e`, `deb5ebf`), so the earlier "stage selectively or lose it" hazard is gone.
-> See [Uncommitted state](#uncommitted-state).
+> 1. **Step 22 — delete the old subscription's resources.** The last irreversible step.
+>    Note the old `encouragement-api` and `contacts-api` revisions are still
+>    deactivated from the write freeze, so that stack is already a *degraded* rollback
+>    target: a DNS rollback would serve a site with dead APIs until they were
+>    reactivated with `az containerapp revision activate`.
+> 2. **The rest of 23 / 24**, which deliberately wait for step 22: raise the `love.`
+>    and `dash.` TTLs from 60s back to 300s, delete
+>    `tfstate/platform-legacy-oldsub.tfstate`, and delete the `stmynltfstate` account.
+>    The archive is a *tool* for step 22, not a leftover of it.
+> 3. Housekeeping: the `.pg-migrate/` dumps hold real submissions and phone numbers.
+>    They are gitignored, but delete them once you are confident.
 
 ## Why and what's already done
 
@@ -504,47 +501,18 @@ and removing. Steps 9 and 10 are retained below for the reasoning.
 
     The old CI identity is left orphaned rather than deleted, so it stays a fallback
     until step 24.
-18. Merge to `main` so source control matches reality, and confirm a CI run lands in the
-    new subscription. `main` requires a pull request, so this is push → PR → merge
-    rather than a direct push.
+18. ~~Merge to `main` and confirm a CI run lands in the new subscription~~ **Done.**
+    PR #6 merged as `a8ef363`; the `production` workflow it triggered finished
+    **successfully**.
 
-    **⚠ Opening the PR deploys dev, before anyone merges anything.**
-    `deploy-dev.yml` triggers on `pull_request` — not on push — and runs a real
-    `aspire deploy -e dev-b` using the `dev` GitHub environment secrets, which step 17
-    repointed at this subscription and at `rg-dev`. Since `rg-dev` does not exist here
-    and azd creates what it does not find, opening the PR would:
+    Verified from the Azure side rather than the workflow log, whose subscription and
+    resource-group values are masked as secrets: every deployment in `rg-prod` between
+    01:23 and 01:27Z reports `Succeeded`, and the **old** subscription's `rg-dev` saw no
+    deployments at all in that window. So CI really does deploy to
+    `Subscription 1` / `rg-prod` now.
 
-    - create `rg-dev` and provision a whole dev stack in it, **including a
-      GeneralPurpose Postgres at roughly $130/mo** — Burstable being unavailable
-      subscription-wide, per [decision 7](#decisions), whose open question is precisely
-      whether dev should have its own server at all; then
-    - **fail anyway**, on `CertificateNotFound` for `dev-cert`, which does not exist in
-      the new environment — and could not be issued regardless, because
-      `dev.maybeyourenotlost.com` still resolves to the old `jollydune-*` environment.
-
-    That is step 21 happening by accident, half-built and billing.
-
-    **Mitigated: `dev` is dropped from `github_environments`** and `entra` re-applied —
-    5 destroyed, 0 added, so the dev federated credential and all four dev secrets are
-    gone. Note Terraform *deletes* them rather than restoring their previous
-    hand-set values, so the dev environment now has no credentials at all and a dev
-    deploy fails at `azure/login`. Production's four are untouched.
-
-    **⚠ And that makes step 21 a prerequisite of this step, not a successor.** `main`'s
-    ruleset carries
-    `required_deployments: {required_deployment_environments: ["dev"]}`, so **a merge
-    needs a *successful* dev deployment.** With dev's secrets dropped it fails; with
-    them pointed at a `rg-dev` that does not exist it also fails. Either way the merge
-    is blocked until the dev environment genuinely exists in this subscription.
-
-    **So do step 21 before step 18.** The order of operations is wrong on this point and
-    the numbering is left alone only to keep the cross-references stable. The remaining
-    alternative, if the dev rebuild needs to wait, is to drop `dev` from the ruleset's
-    `required_deployment_environments` — a branch-protection change on a public repo,
-    which is why it is not the default.
-
-    Pushing the branch alone is safe and triggers nothing: `deploy-dev.yml` has no
-    `push` trigger. `MYNL-19` is pushed and current.
+    The dev deploy that gates this merge needed a fix first — see
+    [the OIDC subject finding](#findings-worth-keeping).
 19. ~~Promote the client secret~~ **Done.** `kv-mynl` is the only vault: the secret
     written there additively during the migration was moved onto the canonical address,
     and the `client_secret_target` resource, the `azurerm.target` provider alias, the
@@ -988,6 +956,15 @@ the investigation:
   took about 8 minutes of a ~13-minute window; the deploy either side of it took about a
   minute. Pre-creating the certificates is therefore the single biggest lever on
   downtime for any future environment move.
+- **A GitHub OIDC `sub` claim does not have to use repository *names*.** With immutable
+  subject claims enabled, GitHub sends numeric owner and repository IDs
+  (`repo:owner@<ownerId>/repo@<repoId>:environment:<env>`), and a federated credential
+  built from the names never matches — `azure/login` fails with `AADSTS700213: No
+  matching federated identity record found`. Read the live value with
+  `gh api repos/<owner>/<repo>/actions/oidc/customization/sub` rather than assuming the
+  name-based form. Immutable IDs are the point of the setting: they survive an owner or
+  repository rename, where names silently stop matching. Subject is not ForceNew, so
+  correcting it updates the credential in place.
 - **An "empty custom domain means skip binding" conditional driven from
   `builder.Configuration["Parameters:customDomain"]` does not work**, and the reason is
   now known: **`aspire deploy` caches every `Parameters:*` value in a per-environment
