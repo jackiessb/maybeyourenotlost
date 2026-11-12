@@ -93,22 +93,60 @@ variable "cicd_application_display_name" {
   default     = "MYNL CI/CD"
 }
 
+variable "github_oidc_subject_prefix" {
+  description = <<-DESC
+    Prefix of the `sub` claim GitHub puts in its OIDC token, which the federated
+    credential's subject must match exactly.
+
+    This repository has **immutable subject claims** enabled, so the prefix carries
+    numeric owner and repository IDs rather than their names
+    (`repo:owner@<ownerId>/repo@<repoId>`). The name-based form that `github_owner` and
+    `github_repository` would produce does not match, and the deploy fails at
+    `azure/login` with:
+
+      AADSTS700213: No matching federated identity record found for presented
+      assertion subject '...'
+
+    Immutable IDs are the point of the setting -- they survive an owner or repository
+    rename, where the name-based form silently stops matching. Read the live value with:
+
+      gh api repos/<owner>/<repo>/actions/oidc/customization/sub
+
+    Committed rather than left in tfvars because owner and repository IDs are public,
+    immutable, and needed for a fresh checkout to produce working credentials. Set to
+    `""` to fall back to the name-based form, for a repository without immutable
+    subjects enabled.
+  DESC
+  type        = string
+  default     = "repo:jackiessb@62896868/maybeyourenotlost@1333678914"
+}
+
 variable "github_environments" {
   description = <<-DESC
     GitHub Actions environments that deploy, keyed by environment name, with the
     Azure resource group each one targets.
 
-    Note the deliberate naming inversion documented in docs/environment.md: the
-    GitHub `production` environment deploys to the Azure resource group named
-    `rg-dev`, and the GitHub `dev` environment deploys to `rg-dev-b`. The names
-    diverged from when each was created. Do not "fix" these by matching them up.
+    **Deliberately has no default.** The resource group names change during the
+    subscription migration, and a stale default would silently point a deploy at
+    the wrong resource group -- which, since azd creates what it does not find,
+    means a duplicate stack rather than an error.
+
+      Before the migration (the historical inversion, see docs/environment.md):
+        production = { resource_group = "rg-dev" }
+        dev        = { resource_group = "rg-dev-b" }
+
+      After the migration (the corrected convention):
+        production = { resource_group = "rg-prod" }
+        dev        = { resource_group = "rg-dev" }
   DESC
   type = map(object({
     resource_group = string
   }))
-  default = {
-    production = { resource_group = "rg-dev" }
-    dev        = { resource_group = "rg-dev-b" }
+  default = {}
+
+  validation {
+    condition     = !var.manage_github_actions || length(var.github_environments) > 0
+    error_message = "github_environments must be set explicitly when manage_github_actions is true, so the resource group each environment deploys into is a deliberate choice rather than a stale default."
   }
 }
 
@@ -121,3 +159,4 @@ variable "cicd_subscription_id" {
   type        = string
   default     = ""
 }
+

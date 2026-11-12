@@ -86,23 +86,3 @@ variable "cicd_principal_ids" {
   default     = []
 }
 
-variable "secret_writer_principal_ids" {
-  description = <<-DESC
-    Principal object IDs that may write secrets into the vault, in addition to
-    whoever runs this module.
-
-    Needed because the entra module spans two tenants: its azuread provider must
-    authenticate as an M365-tenant identity, while its azurerm provider writes the
-    client secret into this vault. The Azure CLI resolves a tenant against the
-    *active* account, so one run cannot use two different accounts -- the M365
-    identity has to be the one holding vault access. Put that identity's object ID
-    *as it exists in this tenant* here (a B2B guest has a different object ID in
-    each directory).
-
-    Granted Reader on the vault as well as Secrets Officer: writing a secret needs
-    a control-plane read of the vault to resolve its URI, which Secrets Officer
-    alone does not cover.
-  DESC
-  type        = list(string)
-  default     = []
-}

@@ -4,14 +4,23 @@
 
 MYNL operates on two levels of environment: _dev_ and _production_.
 
-These environments have diverging names in the actual code due to when they were created:
+The Azure resource group names and the Aspire environment names diverged from when each
+was created, and the resource group half is being corrected during the subscription
+migration (see [`plans/subscription-migration.md`](plans/subscription-migration.md)).
+Azure cannot rename a resource group in place, so the correction happens for free in the
+new subscription, where everything is created fresh.
 
-- dev
-  - In Azure: dev-b
-  - In Aspire: dev-b
-- production
-  - In Azure: dev
-  - In Aspire: production
+| Environment | Aspire env | Azure RG (current) | Azure RG (after migration) | Hostname |
+| --- | --- | --- | --- | --- |
+| dev | `dev-b` | `rg-dev-b` | **`rg-dev`** | `dev.maybeyourenotlost.com` |
+| production | `production` | `rg-dev` | **`rg-prod`** | `love.` / `dash.` |
+
+Until the migration lands, the inversion is live: **the `rg-dev` resource group holds
+production.** Do not reason from the name.
+
+The Aspire environment name `dev-b` stays as it is for now — renaming it means renaming
+`appsettings.dev-b.json` and the `ASPIRE_ENVIRONMENT` value in the dev workflow, which is
+a separate change from the resource groups.
 
 ## Workflows
 

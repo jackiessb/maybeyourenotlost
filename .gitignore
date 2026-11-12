@@ -26,3 +26,8 @@ obj/
 # Aspire publish output
 out/
 apphost/aspire-output
+
+# Postgres dumps from infra/pg-migrate.sh -- real submissions and contact phone
+# numbers. Never commit these.
+.pg-migrate/
+*.dump

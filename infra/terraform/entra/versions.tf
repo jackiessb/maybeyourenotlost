@@ -24,12 +24,12 @@ terraform {
   # versioned, private container rather than on a laptop.
   backend "azurerm" {
     resource_group_name  = "rg-mynl-tfstate"
-    storage_account_name = "stmynltfstate"
+    storage_account_name = "stmynlstate"
     container_name       = "tfstate"
     key                  = "entra.tfstate"
     use_azuread_auth     = true
-    tenant_id            = "e22c9007-0f6b-44b6-a403-af91c309278d"
-    subscription_id      = "c1a7d305-fc17-4bba-a6a9-bcb3cad99751"
+    tenant_id            = "aac88807-ec5d-4c7a-8379-0f2baf8123e0"
+    subscription_id      = "20aad6af-afbd-4c72-a48d-59ae01ca2cb2"
   }
 }
 
@@ -42,9 +42,14 @@ provider "azuread" {
   tenant_id = var.entra_tenant_id
 }
 
-# Points at wherever the Key Vault lives. During the migration that is the old
-# subscription in the Default Directory tenant; afterwards it is the M365
-# tenant's subscription and these match var.entra_tenant_id.
+# Points at wherever the Key Vault lives. Since the subscription migration completed
+# that is the M365 tenant's subscription, so these now match var.entra_tenant_id.
+#
+# The migration needed a second `azurerm.target` alias here: the primary had to stay
+# pinned to whichever tenant still held the secret, because Terraform must refresh the
+# existing resource there, and repointing the primary would fail on a cross-tenant
+# token before it could even plan. With both vault and app registration in aac88807
+# that no longer applies, so the alias is gone.
 provider "azurerm" {
   features {}
 
