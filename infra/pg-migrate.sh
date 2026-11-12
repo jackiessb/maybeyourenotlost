@@ -1,5 +1,20 @@
 #!/usr/bin/env bash
 #
+# RETIRED -- kept for the record, not runnable.
+#
+# The source this script reads from no longer exists: postgres-yudlalf6hmivo and the
+# old subscription's rg-dev / rg-dev-b were deleted at the end of the migration
+# (step 22). Every phase below that touches OLD_* will fail on a missing resource.
+#
+# It is kept because the constraints it encodes were expensive to discover and apply to
+# any future cross-tenant Postgres move: Entra-only servers need a token as the
+# password, a *human* Entra admin has to be granted before any user can connect at all,
+# two servers in different tenants need their tokens minted per subscription, a B2B
+# guest's Postgres role name is the mangled `#EXT#` form so it must be read back from
+# the server rather than guessed, and a data-only restore needs the target truncated
+# first and __EFMigrationsHistory excluded. See
+# docs/plans/subscription-migration.md.
+#
 # Postgres dump/restore across the subscription migration.
 #
 # Used twice: once as a rehearsal while both stacks are live (Phase 4 step 8), and
